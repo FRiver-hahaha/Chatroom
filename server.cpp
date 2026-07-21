@@ -1,0 +1,329 @@
+#include "server.hpp"
+#include <iostream>
+#include <chrono>
+
+namespace chatroom {
+
+Server::Server(size_t thread_num)
+    : thread_pool_(std::make_unique<ThreadPool>(thread_num)) {}
+
+Server::~Server() {
+    stop();
+    if (listen_fd_ > 0) {
+        close(listen_fd_);
+        listen_fd_ = -1;
+    }
+}
+
+bool Server::start(int port) {
+    if (!init_uring()) {
+        std::cerr << "[Server] Failed to init io_uring" << std::endl;
+        return false;
+    }
+    if (!init_socket(port)) {
+        std::cerr << "[Server] Failed to init listen socket" << std::endl;
+        return false;
+    }
+    submit_accept();
+    submit_timeout();
+
+    std::cout << "[Server] Started on port " << port << std::endl;
+    return true;
+}
+
+void Server::run() {
+    while (running_.load()) {
+        struct io_uring_cqe* cqe;
+
+        int ret = io_uring_wait_cqe(&ring_, &cqe);
+        if (ret < 0) {
+            std::cerr << "[Server] wait_cqe error: " << -ret << std::endl;
+            continue;
+        }
+
+        handle_cqe(cqe);
+        io_uring_cqe_seen(&ring_, cqe);
+
+        // 批量收割更多 CQE
+        while (true) {
+            struct io_uring_cqe* more;
+            ret = io_uring_peek_cqe(&ring_, &more);
+            if (ret == -EAGAIN) break;
+            if (ret < 0) break;
+
+            handle_cqe(more);
+            io_uring_cqe_seen(&ring_, more);
+        }
+        flush_pending_sends();
+
+        io_uring_submit(&ring_);
+    }
+}
+
+void Server::stop() {
+    running_.store(false);
+    io_uring_queue_exit(&ring_);
+
+    for (auto& [fd, conn] : conns_) {
+        close(fd);
+    }
+    conns_.clear();
+    std::cout << "[Server] Stopped" << std::endl;
+}
+
+void Server::send_to(Connection* conn, const std::string& data) {
+    if (!conn) return;
+    conn->send_queue.push_back(data);
+    submit_send(conn);
+}
+
+void Server::send_to_async(int fd, const std::string& data) {
+    std::lock_guard<std::mutex> lock(send_mutex_);
+    pending_sends_.push({fd, data});
+}
+ 
+void Server::flush_pending_sends() {
+    std::lock_guard<std::mutex> lock(send_mutex_);
+    while (!pending_sends_.empty()) {
+        auto& send = pending_sends_.front();
+        auto it = conns_.find(send.fd);
+        if (it != conns_.end()) {
+            it->second->send_queue.push_back(send.data);
+            submit_send(it->second.get());
+        }
+        pending_sends_.pop();
+    }
+}
+
+void Server::close_connection(Connection* conn) {
+    if (!conn) return;
+    close_connection(conn->fd);
+}
+
+void Server::close_connection(int fd) {
+    auto it = conns_.find(fd);
+    if (it == conns_.end()) return;
+
+    Connection* conn = it->second.get();
+
+    if (on_close_) {
+        on_close_(conn);
+    }
+
+    close(fd);
+    conns_.erase(it);
+
+    std::cout << "[Server] Connection " << fd << " closed, remaining: "
+              << conns_.size() << std::endl;
+}
+
+bool Server::init_uring() {
+    struct io_uring_params params = {};
+    params.flags |= IORING_SETUP_SQPOLL;
+    params.sq_thread_idle = 1000;
+
+    int ret = io_uring_queue_init_params(QUEUE_SIZE, &ring_, &params);
+    if (ret < 0) {
+        std::cerr << "[Server] io_uring init failed: " << -ret << std::endl;
+        return false;
+    }
+
+    std::cout << "[Server] io_uring ready: SQ=" << *ring_.sq.kring_entries
+              << ", CQ=" << *ring_.cq.kring_entries << ", SQPOLL=on" << std::endl;
+    return true;
+}
+
+bool Server::init_socket(int port) {
+    listen_fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (listen_fd_ < 0) {
+        perror("socket");
+        return false;
+    }
+
+    int opt = 1;
+    if (setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+        close(listen_fd_);
+        return false;
+    }
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port);
+
+    if (bind(listen_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        perror("bind");
+        close(listen_fd_);
+        return false;
+    }
+
+    if (listen(listen_fd_, 128) < 0) {
+        perror("listen");
+        close(listen_fd_);
+        return false;
+    }
+
+    std::cout << "[Server] Listening on port " << port << std::endl;
+    return true;
+}
+void Server::submit_accept() {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+    if (!sqe) {
+        io_uring_submit(&ring_);
+        sqe = io_uring_get_sqe(&ring_);
+        if (!sqe) return;
+    }
+    io_uring_prep_multishot_accept(sqe, listen_fd_, nullptr, nullptr, 0);
+    io_uring_sqe_set_data64(sqe, ACCEPT_TAG);
+}
+
+void Server::submit_recv(Connection* conn) {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+    if (!sqe) return;
+
+    io_uring_prep_recv(sqe, conn->fd, conn->buffer, BUFFER_SIZE, 0);
+    io_uring_sqe_set_data64(sqe, (uint64_t)conn->fd);
+}
+
+void Server::submit_send(Connection* conn) {
+    if (conn->sending || conn->send_queue.empty()) return;
+
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+    if (!sqe) return;
+
+    std::string& data = conn->send_queue.front();
+    io_uring_prep_send(sqe, conn->fd, data.data(), data.size(), 0);
+    io_uring_sqe_set_data64(sqe, (uint64_t)conn->fd);
+    conn->sending = true;
+}
+
+void Server::submit_timeout() {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+    if (!sqe) return;
+
+    struct __kernel_timespec ts = {HEARTBEAT_INTERVAL, 0};
+    io_uring_prep_timeout(sqe, &ts, 0, 0);
+    io_uring_sqe_set_data64(sqe, TIMEOUT_TAG);
+}
+
+void Server::handle_cqe(struct io_uring_cqe* cqe) {
+    uint64_t tag = io_uring_cqe_get_data64(cqe);
+    int res = cqe->res;
+
+    if (tag == TIMEOUT_TAG) {
+        handle_timeout();
+        return;
+    }
+
+    if (tag == ACCEPT_TAG) {
+        if (res < 0) {
+            submit_accept();
+            return;
+        }
+        handle_accept(res);
+        return;
+    }
+
+    auto it = conns_.find((int)tag);
+    if (it == conns_.end()) return;
+
+    Connection* conn = it->second.get();
+    conn->touch();
+
+    if (res > 0) {
+        handle_recv(conn, res);
+    } else {
+        close_connection(conn->fd);
+    }
+}
+
+void Server::handle_accept(int fd) {
+    std::cout << "[Server] New client: fd=" << fd << std::endl;
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
+        return;
+    }
+
+    auto conn = std::make_shared<Connection>(fd);
+    conns_[fd] = conn;
+    conn_count_++;
+
+    if (on_connect_) {
+        on_connect_(conn.get());
+    }
+
+    submit_recv(conn.get());
+}
+
+void Server::handle_recv(Connection* conn, int bytes) {
+    std::cout << "[Server] Recv " << bytes << " bytes from fd " << conn->fd << std::endl;
+
+    submit_recv(conn);
+
+    if (on_recv_) {
+        std::vector<char> data(conn->buffer, conn->buffer + bytes);
+
+        auto it = conns_.find(conn->fd);
+        if (it == conns_.end()) return;
+
+        auto conn_shared = it->second;
+        int fd = conn->fd;
+
+        thread_pool_->submit(
+            [conn_shared, data = std::move(data), bytes, fd, this]() {
+                std::cout << "[线程池] 处理 " << bytes << " 字节来自 fd " << fd << std::endl;
+                if (on_recv_) {
+                    on_recv_(conn_shared.get(), bytes);
+                }
+            },
+            []() {}
+        );
+    }
+}
+
+void Server::handle_send(Connection* conn, int result) {
+    conn->sending = false;
+
+    if (result < 0) {
+        close_connection(conn->fd);
+        return;
+    }
+
+    if (!conn->send_queue.empty()) {
+        conn->send_queue.erase(conn->send_queue.begin());
+    }
+
+    if (on_send_) {
+        on_send_(conn, result);
+    }
+
+    if (!conn->send_queue.empty()) {
+        submit_send(conn);
+    }
+}
+
+void Server::handle_timeout() {
+    cleanup_timeout_connections();
+    if (running_.load()) {
+        submit_timeout();
+    }
+}
+
+void Server::cleanup_timeout_connections() {
+    std::vector<int> to_remove;
+    for (auto& [fd, conn] : conns_) {
+        if (conn->is_timeout()) {
+            to_remove.push_back(fd);
+        }
+    }
+
+    for (int fd : to_remove) {
+        std::cout << "[Server] Connection " << fd << " timed out" << std::endl;
+        close_connection(fd);
+    }
+}
+
+}
