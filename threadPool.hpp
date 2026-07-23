@@ -1,5 +1,4 @@
-#ifndef THREADPOOL
-#define THREADPOOL
+#pragma once
 
 #include <iostream>
 #include <vector>
@@ -12,10 +11,8 @@
 #include <future>
 #include <iomanip>
 
-using std::string, std::cout, std::endl;
-
-void log(const string& msg);
-void log(const string& msg, int x);
+void log(const std::string& msg);
+void log(const std::string& msg, int x);
 
 class ThreadPool {
 
@@ -35,7 +32,22 @@ public:
     ~ThreadPool();
 
     template<class F, class CB>
-    auto submit(F&& f, CB&& cb) -> std::future<decltype(f())>;
+    auto submit(F&& f, CB&& cb) -> std::future<decltype(f())> {
+        using returnType = decltype(f());
+        auto job = std::make_shared<std::packaged_task<returnType()>>(
+            std::forward<F>(f)
+        );
+        std::future<returnType> res = job->get_future();
+        {
+            std::lock_guard<std::mutex> lg(mtx);
+            jobs.emplace([job, cb]() {
+                (*job)();
+                cb();
+            });
+        }
+        cv.notify_one();
+        return res;
+    }
       
 /*
     隐藏接口:
@@ -52,5 +64,3 @@ private:
     std::condition_variable cv;// 条件变量
     bool stop = false;// 控制条件
 };
-
-#endif

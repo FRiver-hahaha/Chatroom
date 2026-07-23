@@ -231,7 +231,9 @@ void Server::handle_cqe(struct io_uring_cqe* cqe) {
     Connection* conn = it->second.get();
     conn->touch();
 
-    if (res > 0) {
+    if (conn->sending) {
+        handle_send(conn, res);
+    } else if (res > 0) {
         handle_recv(conn, res);
     } else {
         close_connection(conn->fd);
@@ -251,6 +253,10 @@ void Server::handle_accept(int fd) {
     conns_[fd] = conn;
     conn_count_++;
 
+    if (storage_) {
+        conn->init_business(storage_, this);
+    }
+
     if (on_connect_) {
         on_connect_(conn.get());
     }
@@ -261,22 +267,21 @@ void Server::handle_accept(int fd) {
 void Server::handle_recv(Connection* conn, int bytes) {
     std::cout << "[Server] Recv " << bytes << " bytes from fd " << conn->fd << std::endl;
 
+    auto it = conns_.find(conn->fd);
+    if (it == conns_.end()) return;
+    auto conn_shared = it->second;
+
+    std::vector<char> data(conn->buffer, conn->buffer + bytes);
+    int fd = conn->fd;
+
     submit_recv(conn);
 
     if (on_recv_) {
-        std::vector<char> data(conn->buffer, conn->buffer + bytes);
-
-        auto it = conns_.find(conn->fd);
-        if (it == conns_.end()) return;
-
-        auto conn_shared = it->second;
-        int fd = conn->fd;
-
         thread_pool_->submit(
-            [conn_shared, data = std::move(data), bytes, fd, this]() {
-                std::cout << "[线程池] 处理 " << bytes << " 字节来自 fd " << fd << std::endl;
+            [conn_shared, data_str = std::string(data.begin(), data.end()), fd, this]() {
+                std::cout << "[线程池] 处理 " << data_str.size() << " 字节来自 fd " << fd << std::endl;
                 if (on_recv_) {
-                    on_recv_(conn_shared.get(), bytes);
+                    on_recv_(conn_shared.get(), data_str);
                 }
             },
             []() {}
@@ -324,6 +329,15 @@ void Server::cleanup_timeout_connections() {
         std::cout << "[Server] Connection " << fd << " timed out" << std::endl;
         close_connection(fd);
     }
+}
+
+void Connection::init_business(std::shared_ptr<StorageManager> storage, Server* server) {
+    db_queryer_ = std::make_unique<DatabaseQueryer>(storage);
+    dispatcher_ = std::make_unique<MessageDispatcher>(
+        [server](int fd, const std::string& data) {
+            server->send_to_async(fd, data);
+        }
+    );
 }
 
 }

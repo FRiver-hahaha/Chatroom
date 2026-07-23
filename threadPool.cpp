@@ -4,22 +4,22 @@
     接受字符串参数，打印日志。
 */
 
-void log(const string& msg) {
+void log(const std::string& msg) {
     static std::mutex logMtx;
     std::lock_guard<std::mutex> lg(logMtx);
 
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
-    cout << msg << endl;
+    std::cout << msg << std::endl;
 }
 
-void log(const string& msg, int x) {
+void log(const std::string& msg, int x) {
     static std::mutex logMtx;
     std::lock_guard<std::mutex> lg(logMtx);
 
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
-    cout << msg;
+    std::cout << msg;
 }
 
 
@@ -80,34 +80,4 @@ void ThreadPool::worker() {
         }
         job();
     }
-}
-
-/*
-    线程池任务提交函数:
-    模板:声明，接受任意任务，参数，回调
-    返回值:future异步处理任务结果，最后执行回调
-    returnType:任务自动获取到对应任务的返回值，用于回调
-    job:任务包装，加入到队列中
-    上锁访问队列:加入
-*/
-
-template<class F, class CB>
-auto ThreadPool::submit(F&& f, CB&& cb) -> std::future<decltype(f())> {
-    using returnType = decltype(f());// 获取返回值类型
-
-    auto job = std::make_shared<std::packaged_task<returnType()>> (
-        std::forward<F>(f)
-    );// 任务包装器:在让多线程共享的前提下，将任务完美包装到job里
-    std::future<returnType> res = job->get_future();// 获取结果
-
-    {// 上锁访问队列
-        std::lock_guard<std::mutex> lg(mtx);
-        jobs.emplace([job, cb]() {
-            (*job)();
-            cb();
-        });
-    }
-    cv.notify_one();// 唤醒线程，准备工作
-    log("(submit)任务已加入队列");
-    return res;
 }
