@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MessageType.hpp"
+#include "MessageParser.hpp"
 #include "DatabaseQueryResult.hpp"
 #include <memory>
 #include <iostream>
@@ -14,8 +15,10 @@ struct Connection;
 class MessageDispatcher {
 public:
     using SendFunc = std::function<void(int, const std::string&)>;
+    using LookupFunc = std::function<int(uint64_t user_id)>;
 
-    explicit MessageDispatcher(SendFunc sender) : sender_(std::move(sender)) {}
+    explicit MessageDispatcher(SendFunc sender, LookupFunc lookup)
+        : sender_(std::move(sender)), lookup_(std::move(lookup)) {}
     
     void dispatch(Connection* conn,
                   const Message& msg,
@@ -30,25 +33,27 @@ public:
         
         int type_val = static_cast<int>(msg.type);
         
-        // 根据消息类型路由
         if (type_val >= 1 && type_val < 100) {
-            // 账号模块
             dispatch_account(conn, msg, query_result);
         } else if (type_val >= 100 && type_val < 200) {
-            // 好友模块
             dispatch_friend(conn, msg, query_result);
         } else if (type_val >= 200 && type_val < 300) {
-            // 群组模块
             dispatch_group(conn, msg, query_result);
         } else if (type_val >= 300 && type_val < 400) {
-            // 聊天模块
             dispatch_chat(conn, msg, query_result);
         } else if (type_val >= 400 && type_val < 500) {
-            // 文件模块
             dispatch_file(conn, msg, query_result);
         } else {
             std::cerr << "[MessageDispatcher] Unknown message type: " 
                       << type_val << std::endl;
+        }
+    }
+
+    // ===== 通知方法 =====
+    void notify_user(uint64_t user_id, const std::string& message) {
+        int fd = lookup_(user_id);
+        if (fd >= 0) {
+            sender_(fd, message);
         }
     }
 
@@ -59,8 +64,6 @@ private:
         switch (msg.type) {
             case MessageType::LOGIN_REQ:
                 handle_login(conn, msg, result);
-                break;
-            case MessageType::LOGIN_RSP:
                 break;
             case MessageType::REGISTER_REQ:
                 handle_register(conn, msg, result);
@@ -76,26 +79,39 @@ private:
     void handle_login(Connection* conn, 
                       const Message& msg, 
                       const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "登录失败: " + result.error_message);
-            return;
-        }
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
         
+        if (!result.success) return;
+        
+        // 更新连接状态
         conn->user_id = result.user_id;
         conn->username = result.username;
         conn->state = SessionState::LOGGED_IN;
         conn->session_token = result.token;
         
-        sender_(conn->fd, "登录成功！欢迎 " + result.nickname);
-        
+        // 发送离线消息
         if (!result.offline_messages.empty()) {
-            sender_(conn->fd, "你有 " + 
-                std::to_string(result.offline_messages.size()) + " 条离线消息");
+            Message offline_notify;
+            offline_notify.type = MessageType::OFFLINE_MSG_NOTIFY;
+            offline_notify.sender_id = 0;
+            std::string notify_str = "你有 " + std::to_string(result.offline_messages.size()) + " 条离线消息";
+            sender_(conn->fd, notify_str);
+            
+            for (const auto& offline_msg : result.offline_messages) {
+                std::string msg_text = "[离线消息][" + offline_msg.sender_name + "]: " + offline_msg.content;
+                sender_(conn->fd, msg_text);
+            }
         }
         
+        // 通知好友上线
         for (const auto& friend_info : result.friend_list) {
             if (friend_info.is_online) {
-                sender_(friend_info.user_id, "好友上线通知");
+                int friend_fd = lookup_(friend_info.user_id);
+                if (friend_fd >= 0) {
+                    std::string notify = "[系统通知] 好友 " + conn->username + " 上线了";
+                    sender_(friend_fd, notify);
+                }
             }
         }
     }
@@ -103,23 +119,21 @@ private:
     void handle_register(Connection* conn, 
                          const Message& msg, 
                          const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "注册失败: " + result.error_message);
-            return;
-        }
-        
-        sender_(conn->fd, "注册成功！用户ID: " + 
-            std::to_string(result.user_id));
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
     }
     
     void handle_logout(Connection* conn, 
                        const Message& msg, 
                        const QueryResult& result) {
-        sender_(conn->fd, "已注销");
-        conn->logout();
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
+        
+        if (result.success) {
+            conn->logout();
+        }
     }
     
-    // ===== 好友模块分发 =====
     void dispatch_friend(Connection* conn, 
                          const Message& msg, 
                          const QueryResult& result) {
@@ -144,50 +158,38 @@ private:
     void handle_add_friend(Connection* conn, 
                            const Message& msg, 
                            const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "添加好友失败: " + result.error_message);
-            return;
-        }
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
         
-        sender_(conn->fd, "添加好友成功");
+        // 通知目标用户
+        if (result.success && msg.target_id != 0) {
+            int target_fd = lookup_(msg.target_id);
+            if (target_fd >= 0) {
+                std::string notify = "[系统通知] 用户 " + conn->username + " 请求添加你为好友";
+                sender_(target_fd, notify);
+            }
+        }
     }
     
     void handle_delete_friend(Connection* conn, 
                               const Message& msg, 
                               const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "删除好友失败");
-            return;
-        }
-        
-        sender_(conn->fd, "删除好友成功");
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
     }
     
     void handle_query_friend(Connection* conn, 
                              const Message& msg, 
                              const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "查询好友失败");
-            return;
-        }
-        
-        std::string response = "好友列表:\n";
-        for (const auto& friend_info : result.friend_list) {
-            response += "- " + friend_info.nickname + 
-                       " (" + (friend_info.is_online ? "在线" : "离线") + ")\n";
-        }
+        std::string response = MessageParser::serialize_response(msg, result);
         sender_(conn->fd, response);
     }
     
     void handle_block_friend(Connection* conn, 
                              const Message& msg, 
                              const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "屏蔽好友失败");
-            return;
-        }
-        
-        sender_(conn->fd, "屏蔽好友成功");
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
     }
     
     void dispatch_group(Connection* conn, 
@@ -196,6 +198,9 @@ private:
         switch (msg.type) {
             case MessageType::CREATE_GROUP_REQ:
                 handle_create_group(conn, msg, result);
+                break;
+            case MessageType::DISMISS_GROUP_REQ:
+                handle_dismiss_group(conn, msg, result);
                 break;
             case MessageType::JOIN_GROUP_REQ:
                 handle_join_group(conn, msg, result);
@@ -217,69 +222,50 @@ private:
     void handle_create_group(Connection* conn, 
                              const Message& msg, 
                              const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "创建群组失败");
-            return;
-        }
-        
-        sender_(conn->fd, "群组创建成功");
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
+    }
+    
+    void handle_dismiss_group(Connection* conn, 
+                              const Message& msg, 
+                              const QueryResult& result) {
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
     }
     
     void handle_join_group(Connection* conn, 
                            const Message& msg, 
                            const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "申请加入群组失败");
-            return;
-        }
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
         
-        sender_(conn->fd, "已申请加入群组，等待管理员审批");
+        // 通知群主和管理员
+        if (result.success && result.group_id != 0) {
+            // TODO: 通知群管理员
+        }
     }
     
     void handle_quit_group(Connection* conn, 
                            const Message& msg, 
                            const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "退出群组失败");
-            return;
-        }
-        
-        sender_(conn->fd, "已退出群组");
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
     }
     
     void handle_query_group_list(Connection* conn, 
                                  const Message& msg, 
                                  const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "查询群组列表失败");
-            return;
-        }
-        
-        std::string response = "我的群组:\n";
-        for (const auto& group : result.group_list) {
-            response += "- " + group.group_name + 
-                       " (" + std::to_string(group.member_count) + "人)\n";
-        }
+        std::string response = MessageParser::serialize_response(msg, result);
         sender_(conn->fd, response);
     }
     
     void handle_query_group_members(Connection* conn, 
                                     const Message& msg, 
                                     const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "查询群组成员失败");
-            return;
-        }
-        
-        std::string response = "群组成员:\n";
-        for (const auto& member : result.group_members) {
-            response += "- " + member.nickname + 
-                       " (" + member.role + ")\n";
-        }
+        std::string response = MessageParser::serialize_response(msg, result);
         sender_(conn->fd, response);
     }
     
-    // ===== 聊天模块分发 =====
     void dispatch_chat(Connection* conn, 
                        const Message& msg, 
                        const QueryResult& result) {
@@ -298,55 +284,72 @@ private:
         }
     }
     
-    void handle_private_chat(Connection* conn, 
-                             const Message& msg, 
+    void handle_private_chat(Connection* conn,
+                             const Message& msg,
                              const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "发送失败: " + result.error_message);
-            return;
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
+        
+        if (!result.success) return;
+        
+        // 转发消息给目标用户
+        int target_fd = lookup_(msg.target_id);
+        if (target_fd >= 0) {
+            // 构造转发消息
+            Message forward_msg;
+            forward_msg.type = MessageType::PRIVATE_CHAT_RSP;
+            forward_msg.sender_id = msg.sender_id;
+            forward_msg.target_id = msg.target_id;
+            
+            ChatMessage proto_forward;
+            proto_forward.set_type(static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP));
+            proto_forward.set_sender_id(msg.sender_id);
+            proto_forward.set_target_id(msg.target_id);
+            
+            auto* chat_body = proto_forward.mutable_private_chat_rsp();
+            chat_body->set_success(true);
+            
+            std::string serialized;
+            proto_forward.SerializeToString(&serialized);
+            sender_(target_fd, serialized);
         }
-        
-        // ===== 转发消息给目标用户 =====
-        // 实际项目中需要找到目标用户的连接
-        // auto target_conn = server_.get_connection_by_user_id(msg.target_id);
-        // if (target_conn) {
-        //     sender_(target_conn->fd, "来自 " + conn->username + ": " + msg.payload);
-        // }
-        
-        sender_(conn->fd, "消息已发送");
     }
     
-    void handle_group_chat(Connection* conn, 
-                           const Message& msg, 
+    void handle_group_chat(Connection* conn,
+                           const Message& msg,
                            const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "发送失败: " + result.error_message);
-            return;
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
+        
+        if (!result.success) return;
+        
+        // 广播给群组所有在线成员
+        for (const auto& member : result.group_members) {
+            if (member.user_id == conn->user_id) continue;
+            int member_fd = lookup_(member.user_id);
+            if (member_fd >= 0) {
+                ChatMessage proto_forward;
+                proto_forward.set_type(static_cast<uint32_t>(MessageType::GROUP_CHAT_RSP));
+                proto_forward.set_sender_id(msg.sender_id);
+                proto_forward.set_group_id(msg.group_id);
+                
+                auto* chat_body = proto_forward.mutable_group_chat_rsp();
+                chat_body->set_success(true);
+                
+                std::string serialized;
+                proto_forward.SerializeToString(&serialized);
+                sender_(member_fd, serialized);
+            }
         }
-        
-        // ===== 广播给群组所有成员 =====
-        // 实际项目中需要遍历群组成员并发送
-        
-        sender_(conn->fd, "群消息已发送");
     }
     
     void handle_get_history(Connection* conn, 
                             const Message& msg, 
                             const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "查询历史消息失败");
-            return;
-        }
-        
-        std::string response = "历史消息:\n";
-        for (const auto& history : result.history) {
-            response += "[" + std::to_string(history.timestamp) + "] " +
-                       history.sender_name + ": " + history.content + "\n";
-        }
+        std::string response = MessageParser::serialize_response(msg, result);
         sender_(conn->fd, response);
     }
     
-    // ===== 文件模块分发 =====
     void dispatch_file(Connection* conn, 
                        const Message& msg, 
                        const QueryResult& result) {
@@ -365,27 +368,20 @@ private:
     void handle_file_upload(Connection* conn, 
                             const Message& msg, 
                             const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "文件上传失败");
-            return;
-        }
-        
-        sender_(conn->fd, "文件上传成功");
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
     }
     
     void handle_file_download(Connection* conn, 
                               const Message& msg, 
                               const QueryResult& result) {
-        if (!result.success) {
-            sender_(conn->fd, "文件下载失败");
-            return;
-        }
-        
-        sender_(conn->fd, "文件下载成功");
+        std::string response = MessageParser::serialize_response(msg, result);
+        sender_(conn->fd, response);
     }
 
 private:
     SendFunc sender_;
+    LookupFunc lookup_;
 };
 
 } // namespace chatroom

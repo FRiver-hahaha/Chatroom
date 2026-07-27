@@ -14,14 +14,15 @@ void signal_handler(int sig) {
 }
 
 int main() {
-    // 1. 注册信号
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    // 2. 创建存储层（MySQL + Redis）
     auto storage = std::make_shared<StorageManager>();
+    if (!storage->connect("localhost", "chatroom", "Ch@tRoom2026.Dev", "chatroom")) {
+        std::cerr << "[Main] 数据库连接失败，将以 mock 模式运行" << std::endl;
+    }
 
-    Server server(4);// 数值可调整：线程数量
+    Server server(4);
     g_server = &server;
     server.set_storage(storage);
 
@@ -32,17 +33,20 @@ int main() {
     server.set_on_recv([&](Connection* conn, const std::string& data) {
         Message msg;
         if (!MessageParser::parse(data.data(), static_cast<int>(data.size()), msg)) {
+            std::cerr << "[Pipeline] 消息解析失败" << std::endl;
             server.send_to_async(conn->fd, "消息解析失败");
             return;
         }
 
         std::cout << "[Pipeline] 收到消息: " << message_type_name(msg.type)
-                  << " 来自 fd=" << conn->fd << std::endl;
+                  << " 来自 fd=" << conn->fd 
+                  << " user=" << conn->username << std::endl;
 
         if (!conn->db_queryer_) {
             server.send_to_async(conn->fd, "服务未就绪");
             return;
         }
+
         auto result = conn->db_queryer_->query(conn->state, msg);
 
         if (!conn->dispatcher_) {
@@ -51,6 +55,13 @@ int main() {
         }
 
         conn->dispatcher_->dispatch(conn, msg, result);
+
+        if (msg.type == MessageType::LOGIN_REQ && result.success) {
+            server.register_user_fd(conn->user_id, conn->fd);
+        }
+        if (msg.type == MessageType::LOGOUT_REQ) {
+            server.unregister_user_fd(conn->user_id);
+        }
     });
 
     server.set_on_send([](Connection* conn, int result) {
@@ -61,7 +72,6 @@ int main() {
                   << " 已关闭 (user=" << conn->username << ")" << std::endl;
     });
 
-    // 5. 启动服务器
     if (!server.start(8080)) {
         std::cerr << "服务器启动失败" << std::endl;
         return 1;
@@ -73,7 +83,6 @@ int main() {
     std::cout << "  按 Ctrl+C 停止" << std::endl;
     std::cout << "========================================" << std::endl;
 
-    // 6. 运行事件循环
     server.run();
 
     std::cout << "[Main] 服务器已退出" << std::endl;

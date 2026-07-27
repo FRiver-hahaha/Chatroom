@@ -1,0 +1,86 @@
+#!/bin/bash
+# ============================================================
+# ChatRoom 数据库查看工具
+# 使用方法:
+#   ./scripts/dump_db.sh          — 查看所有用户
+#   ./scripts/dump_db.sh 1001     — 查看指定 user_id 的完整信息
+# ============================================================
+
+MYSQL_CMD="mysql -u chatroom -p'Ch@tRoom2026.Dev' chatroom"
+REDIS_CMD="redis-cli"
+
+echo "=========================================="
+echo "  ChatRoom 数据库存储信息"
+echo "=========================================="
+
+if [ -n "$1" ]; then
+    USER_ID=$1
+
+    echo ""
+    echo "=== MySQL: users 表 (用户 $USER_ID) ==="
+    $MYSQL_CMD -e "SELECT * FROM users WHERE id=$USER_ID\G" 2>/dev/null
+
+    echo ""
+    echo "=== MySQL: friendships 表 (好友关系) ==="
+    $MYSQL_CMD -e "SELECT u.id, u.username, u.nickname, f.is_blocked, f.created_at
+        FROM friendships f JOIN users u ON f.friend_id = u.id
+        WHERE f.user_id=$USER_ID" 2>/dev/null
+
+    echo ""
+    echo "=== MySQL: chat_groups + group_members (群组) ==="
+    $MYSQL_CMD -e "SELECT g.id, g.group_name, gm.role, g.member_count
+        FROM group_members gm JOIN chat_groups g ON gm.group_id = g.id
+        WHERE gm.user_id=$USER_ID" 2>/dev/null
+
+    echo ""
+    echo "=== MySQL: messages (聊天消息) ==="
+    $MYSQL_CMD -e "SELECT m.id, m.sender_id, u.username, LEFT(m.body, 60) as body_preview, m.created_at
+        FROM messages m JOIN users u ON m.sender_id = u.id
+        WHERE m.target_id=$USER_ID OR (m.sender_id=$USER_ID AND m.target_id IS NOT NULL)
+        ORDER BY m.created_at DESC LIMIT 20" 2>/dev/null
+
+    echo ""
+    echo "=== MySQL: files (文件) ==="
+    $MYSQL_CMD -e "SELECT * FROM files WHERE uploader_id=$USER_ID OR target_id=$USER_ID" 2>/dev/null
+
+    echo ""
+    echo "=== Redis: 会话数据 (chatroom:session:$USER_ID) ==="
+    $REDIS_CMD HGETALL "chatroom:session:$USER_ID" 2>/dev/null
+
+    echo ""
+    echo "=== Redis: 在线状态 ==="
+    ONLINE=$($REDIS_CMD SISMEMBER chatroom:online "$USER_ID" 2>/dev/null)
+    if [ "$ONLINE" = "1" ]; then
+        echo "用户 $USER_ID 当前在线"
+    else
+        echo "用户 $USER_ID 当前离线"
+    fi
+
+    echo ""
+    echo "=== Redis: 离线消息 (chatroom:offline_msg:$USER_ID) ==="
+    $REDIS_CMD LRANGE "chatroom:offline_msg:$USER_ID" 0 -1 2>/dev/null
+
+else
+    echo ""
+    echo "=== MySQL: 所有用户 ==="
+    $MYSQL_CMD -e "SELECT id, username, nickname, status, created_at FROM users" 2>/dev/null
+
+    echo ""
+    echo "=== MySQL: 所有群组 ==="
+    $MYSQL_CMD -e "SELECT id, group_name, owner_id, member_count, created_at FROM chat_groups" 2>/dev/null
+
+    echo ""
+    echo "=== Redis: 在线用户列表 ==="
+    $REDIS_CMD SMEMBERS chatroom:online 2>/dev/null
+
+    echo ""
+    echo "=== MySQL: 最近消息 (最新 10 条) ==="
+    $MYSQL_CMD -e "SELECT m.id, u.username, LEFT(m.body, 40) as body_preview, m.created_at
+        FROM messages m JOIN users u ON m.sender_id = u.id
+        ORDER BY m.created_at DESC LIMIT 10" 2>/dev/null
+fi
+
+echo ""
+echo "=========================================="
+echo "  查询完成"
+echo "=========================================="

@@ -1,6 +1,8 @@
 #include "server.hpp"
 #include <iostream>
 #include <chrono>
+#include <cstring>
+#include <arpa/inet.h>
 
 namespace chatroom {
 
@@ -44,7 +46,6 @@ void Server::run() {
         handle_cqe(cqe);
         io_uring_cqe_seen(&ring_, cqe);
 
-        // 批量收割更多 CQE
         while (true) {
             struct io_uring_cqe* more;
             ret = io_uring_peek_cqe(&ring_, &more);
@@ -73,13 +74,24 @@ void Server::stop() {
 
 void Server::send_to(Connection* conn, const std::string& data) {
     if (!conn) return;
-    conn->send_queue.push_back(data);
+    
+    uint32_t len = htonl(data.size());
+    std::string packed(4, '\0');
+    memcpy(&packed[0], &len, 4);
+    packed.append(data);
+    
+    conn->send_queue.push_back(packed);
     submit_send(conn);
 }
 
 void Server::send_to_async(int fd, const std::string& data) {
+    uint32_t len = htonl(data.size());
+    std::string packed(4, '\0');
+    memcpy(&packed[0], &len, 4);
+    packed.append(data);
+    
     std::lock_guard<std::mutex> lock(send_mutex_);
-    pending_sends_.push({fd, data});
+    pending_sends_.push({fd, packed});
 }
  
 void Server::flush_pending_sends() {
@@ -105,6 +117,10 @@ void Server::close_connection(int fd) {
     if (it == conns_.end()) return;
 
     Connection* conn = it->second.get();
+
+    if (conn->user_id != 0) {
+        unregister_user_fd(conn->user_id);
+    }
 
     if (on_close_) {
         on_close_(conn);
@@ -167,6 +183,7 @@ bool Server::init_socket(int port) {
     std::cout << "[Server] Listening on port " << port << std::endl;
     return true;
 }
+
 void Server::submit_accept() {
     struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
     if (!sqe) {
@@ -176,6 +193,7 @@ void Server::submit_accept() {
     }
     io_uring_prep_multishot_accept(sqe, listen_fd_, nullptr, nullptr, 0);
     io_uring_sqe_set_data64(sqe, ACCEPT_TAG);
+    io_uring_submit(&ring_);
 }
 
 void Server::submit_recv(Connection* conn) {
@@ -267,25 +285,48 @@ void Server::handle_accept(int fd) {
 void Server::handle_recv(Connection* conn, int bytes) {
     std::cout << "[Server] Recv " << bytes << " bytes from fd " << conn->fd << std::endl;
 
-    auto it = conns_.find(conn->fd);
-    if (it == conns_.end()) return;
-    auto conn_shared = it->second;
+    // 追加到接收缓冲区
+    conn->recv_buffer.append(conn->buffer, bytes);
 
-    std::vector<char> data(conn->buffer, conn->buffer + bytes);
-    int fd = conn->fd;
-
+    // 重新提交 recv
     submit_recv(conn);
 
-    if (on_recv_) {
-        thread_pool_->submit(
-            [conn_shared, data_str = std::string(data.begin(), data.end()), fd, this]() {
-                std::cout << "[线程池] 处理 " << data_str.size() << " 字节来自 fd " << fd << std::endl;
-                if (on_recv_) {
-                    on_recv_(conn_shared.get(), data_str);
-                }
-            },
-            []() {}
-        );
+    // 循环解析完整的消息帧
+    while (true) {
+        if (conn->reading_header) {
+            if (conn->recv_buffer.size() < 4) break;
+            
+            uint32_t net_len;
+            memcpy(&net_len, conn->recv_buffer.data(), 4);
+            conn->expected_length = ntohl(net_len);
+            conn->recv_buffer.erase(0, 4);
+            conn->reading_header = false;
+        }
+
+        if (!conn->reading_header) {
+            if (conn->recv_buffer.size() < conn->expected_length) break;
+
+            std::string message_data = conn->recv_buffer.substr(0, conn->expected_length);
+            conn->recv_buffer.erase(0, conn->expected_length);
+            conn->reading_header = true;
+            conn->expected_length = 0;
+
+            auto it = conns_.find(conn->fd);
+            if (it != conns_.end()) {
+                auto conn_shared = it->second;
+                int fd = conn->fd;
+
+                thread_pool_->submit(
+                    [conn_shared, data_str = std::move(message_data), fd, this]() {
+                        std::cout << "[线程池] 处理 " << data_str.size() << " 字节来自 fd " << fd << std::endl;
+                        if (on_recv_) {
+                            on_recv_(conn_shared.get(), data_str);
+                        }
+                    },
+                    []() {}
+                );
+            }
+        }
     }
 }
 
@@ -331,13 +372,18 @@ void Server::cleanup_timeout_connections() {
     }
 }
 
+Connection::~Connection() = default;
+
 void Connection::init_business(std::shared_ptr<StorageManager> storage, Server* server) {
     db_queryer_ = std::make_unique<DatabaseQueryer>(storage);
     dispatcher_ = std::make_unique<MessageDispatcher>(
         [server](int fd, const std::string& data) {
             server->send_to_async(fd, data);
+        },
+        [server](uint64_t user_id) -> int {
+            return server->get_fd_by_user_id(user_id);
         }
     );
 }
 
-}
+} // namespace chatroom

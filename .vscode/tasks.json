@@ -1,29 +1,32 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "build with make",
-            "type": "shell",
-            "command": "make",
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "problemMatcher": ["$gcc"]
-        },
-        {
-            "label": "build with gcc",
-            "type": "shell",
-            "command": "gcc",
-            "args": [
-                "-g",
-                "${workspaceFolder}/src/main.c",
-                "-o",
-                "${workspaceFolder}/build/main",
-                "-luring"
-            ],
-            "group": "build",
-            "problemMatcher": ["$gcc"]
-        }
-    ]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake Configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-B", "${workspaceFolder}/build",
+        "-S", "${workspaceFolder}",
+        "-DCMAKE_BUILD_TYPE=Debug"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake Build",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build", "${workspaceFolder}/build",
+        "--target", "server",
+        "-j", "4"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"],
+      "dependsOn": ["CMake Configure"]
+    }
+  ]
 }

@@ -55,5 +55,15 @@
   "C_Cpp_Runner.useLeakSanitizer": false,
   "C_Cpp_Runner.showCompilationTime": false,
   "C_Cpp_Runner.useLinkTimeOptimization": false,
-  "C_Cpp_Runner.msvcSecureNoWarnings": false
+  "C_Cpp_Runner.msvcSecureNoWarnings": false,
+  "mysql.connections": {
+    "chatroom": {
+      "host": "localhost",
+      "port": 3306,
+      "user": "chatroom",
+      "password": "Ch@tRoom2026.Dev",
+      "database": "chatroom",
+      "charset": "utf8mb4"
+    }
+  }
 }

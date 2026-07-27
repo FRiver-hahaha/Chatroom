@@ -1,0 +1,240 @@
+syntax = "proto3";
+
+package chatroom;
+
+// ============================================================
+// 顶层消息信封
+// ============================================================
+
+message ChatMessage {
+    uint32 type       = 1;  // MessageType 枚举值
+    uint64 sender_id  = 2;
+    uint64 target_id  = 3;  // 私聊目标 / 好友目标
+    uint64 group_id   = 4;  // 群聊时使用
+    uint64 timestamp  = 5;
+    string token      = 6;
+
+    oneof body {
+        // --- 账号模块 1-99 ---
+        LoginRequest          login_req           = 10;
+        LoginResponse         login_rsp           = 11;
+        RegisterRequest       register_req        = 12;
+        RegisterResponse      register_rsp        = 13;
+        LogoutRequest         logout_req          = 14;
+        LogoutResponse        logout_rsp          = 15;
+
+        // --- 好友模块 100-199 ---
+        FriendOpRequest       add_friend_req      = 20;
+        FriendOpResponse      add_friend_rsp      = 21;
+        FriendOpRequest       delete_friend_req   = 22;
+        FriendOpResponse      delete_friend_rsp   = 23;
+        FriendOpRequest       query_friend_req    = 24;
+        FriendListResponse    query_friend_rsp    = 25;
+        FriendOpRequest       block_friend_req    = 26;
+        FriendOpResponse      block_friend_rsp    = 27;
+
+        // --- 群组模块 200-299 ---
+        CreateGroupRequest    create_group_req    = 30;
+        GroupOpResponse       create_group_rsp    = 31;
+        GroupOpRequest        dismiss_group_req   = 32;
+        GroupOpResponse       dismiss_group_rsp   = 33;
+        GroupOpRequest        join_group_req      = 34;
+        GroupOpResponse       join_group_rsp      = 35;
+        GroupOpRequest        quit_group_req      = 36;
+        GroupOpResponse       quit_group_rsp      = 37;
+        GroupOpRequest        query_group_list_req = 38;
+        GroupListResponse     query_group_list_rsp = 39;
+        GroupOpRequest        query_group_members_req = 40;
+        GroupMembersResponse  query_group_members_rsp = 41;
+
+        // --- 聊天模块 300-399 ---
+        ChatContent           private_chat_req    = 50;
+        ChatResponse          private_chat_rsp    = 51;
+        ChatContent           group_chat_req      = 52;
+        ChatResponse          group_chat_rsp      = 53;
+        HistoryRequest        get_history_req     = 54;
+        HistoryResponse       get_history_rsp     = 55;
+
+        // --- 文件模块 400-499 ---
+        FileTransfer          file_upload_req     = 60;
+        FileResponse          file_upload_rsp     = 61;
+        FileRequest           file_download_req   = 62;
+        FileResponse          file_download_rsp   = 63;
+    }
+}
+
+// ============================================================
+// 账号模块
+// ============================================================
+
+message LoginRequest {
+    string username = 1;
+    string password = 2;
+}
+
+message LoginResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    uint64 user_id        = 3;
+    string username       = 4;
+    string nickname       = 5;
+    string token          = 6;
+}
+
+message RegisterRequest {
+    string username = 1;
+    string password = 2;
+    string nickname = 3;
+}
+
+message RegisterResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    uint64 user_id        = 3;
+    string username       = 4;
+    string token          = 5;
+}
+
+message LogoutRequest {
+    // token 已在 envelope 中
+}
+
+message LogoutResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+}
+
+// ============================================================
+// 好友模块
+// ============================================================
+
+message FriendOpRequest {
+    uint64 target_user_id = 1;
+}
+
+message FriendOpResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+}
+
+message FriendListResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    repeated FriendInfo friends = 3;
+}
+
+message FriendInfo {
+    uint64 user_id   = 1;
+    string username  = 2;
+    string nickname  = 3;
+    bool   is_online = 4;
+    bool   is_blocked = 5;
+    uint64 add_time  = 6;
+}
+
+// ============================================================
+// 群组模块
+// ============================================================
+
+message CreateGroupRequest {
+    string group_name  = 1;
+    string description = 2;
+    bool   is_public   = 3;
+}
+
+message GroupOpResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    uint64 group_id       = 3;
+}
+
+message GroupOpRequest {
+    uint64 group_id = 1;
+}
+
+message GroupListResponse {
+    bool   success           = 1;
+    string error_message     = 2;
+    repeated GroupInfo groups = 3;
+}
+
+message GroupInfo {
+    uint64 group_id     = 1;
+    string group_name   = 2;
+    string description  = 3;
+    uint64 owner_id     = 4;
+    uint64 member_count = 5;
+    bool   is_member    = 6;
+}
+
+message GroupMembersResponse {
+    bool   success              = 1;
+    string error_message        = 2;
+    repeated GroupMember members = 3;
+}
+
+message GroupMember {
+    uint64 user_id    = 1;
+    string username   = 2;
+    string nickname   = 3;
+    string role       = 4;  // "owner", "admin", "member"
+    uint64 join_time  = 5;
+}
+
+// ============================================================
+// 聊天模块
+// ============================================================
+
+message ChatContent {
+    string payload = 1;  // 消息正文
+}
+
+message ChatResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+}
+
+message HistoryRequest {
+    uint64 target_user_id = 1;  // 私聊历史：对方 user_id
+    uint64 group_id       = 2;  // 群聊历史：群组 ID
+    int32  limit          = 3;  // 返回条数，默认 50
+}
+
+message HistoryResponse {
+    bool   success               = 1;
+    string error_message         = 2;
+    repeated MessageHistoryItem messages = 3;
+}
+
+message MessageHistoryItem {
+    uint64 message_id  = 1;
+    uint64 sender_id   = 2;
+    string sender_name = 3;
+    string content     = 4;
+    uint64 timestamp   = 5;
+    bool   is_read     = 6;
+}
+
+// ============================================================
+// 文件模块
+// ============================================================
+
+message FileTransfer {
+    string file_name = 1;
+    uint64 file_size = 2;
+    bytes  file_data = 3;  // 文件内容（小文件直接内嵌）
+    uint32 chunk_seq = 4;  // 断点续传分片序号（0 = 完整文件）
+    uint32 total_chunks = 5;
+}
+
+message FileRequest {
+    uint64 file_id = 1;
+}
+
+message FileResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    uint64 file_id        = 3;
+    string file_name      = 4;
+    uint64 file_size      = 5;
+}

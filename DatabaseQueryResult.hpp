@@ -17,6 +17,14 @@ struct QueryResult {
     std::string nickname;
     bool is_online = false;
     
+    // ===== 文件响应相关 =====
+    uint64_t file_id = 0;
+    std::string file_name;
+    uint64_t file_size = 0;
+    
+    // ===== 群组相关 =====
+    uint64_t group_id = 0;
+    
     // ===== 好友相关 =====
     struct FriendInfo {
         uint64_t user_id;
@@ -43,7 +51,7 @@ struct QueryResult {
         uint64_t user_id;
         std::string username;
         std::string nickname;
-        std::string role;  // "owner", "admin", "member"
+        std::string role;
         uint64_t join_time = 0;
     };
     std::vector<GroupMember> group_members;
@@ -77,7 +85,7 @@ struct QueryResult {
     
     // ===== 其他 =====
     std::string token;
-    std::string verify_code; 
+    std::string verify_code;
 };
 
 } // namespace chatroom
