@@ -28,16 +28,15 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBURING REQUIRED liburing)
 pkg_check_modules(HIREDIS REQUIRED hiredis)
 pkg_check_modules(MYSQLCLIENT REQUIRED mysqlclient)
-pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
 # ===== Server executable =====
 add_executable(server
     main.cpp
-    server.cpp
-    threadPool.cpp
-    StorageManager.cpp
+    network/server.cpp
+    network/threadPool.cpp
+    storage/StorageManager.cpp
     ${PROTO_SRCS}
 )
 
@@ -49,7 +48,6 @@ target_include_directories(server PRIVATE
     ${LIBURING_INCLUDE_DIRS}
     ${HIREDIS_INCLUDE_DIRS}
     ${MYSQLCLIENT_INCLUDE_DIRS}
-    ${SQLITE3_INCLUDE_DIRS}
 )
 
 target_link_libraries(server PRIVATE
@@ -57,7 +55,6 @@ target_link_libraries(server PRIVATE
     ${LIBURING_LIBRARIES}
     ${HIREDIS_LIBRARIES}
     ${MYSQLCLIENT_LIBRARIES}
-    ${SQLITE3_LIBRARIES}
     OpenSSL::Crypto
     Threads::Threads
 )
@@ -67,4 +64,28 @@ target_compile_options(server PRIVATE
     -Wextra
     -Wpedantic
     -Wshadow
+)
+
+# ===== Client executable =====
+add_executable(client
+    client/client.cpp
+    ${PROTO_SRCS}
+)
+
+target_include_directories(client PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${PROTO_GEN_DIR}
+    ${CMAKE_BINARY_DIR}
+    ${PROTOBUF_INCLUDE_DIRS}
+)
+
+target_link_libraries(client PRIVATE
+    ${PROTOBUF_LIBRARIES}
+    Threads::Threads
+)
+
+target_compile_options(client PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
 )

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "MessageType.hpp"
-#include "DatabaseQueryResult.hpp"
+#include "storage/DatabaseQueryResult.hpp"
 #include "chatroom.pb.h"
 #include <string>
 #include <cstring>

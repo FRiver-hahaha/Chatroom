@@ -6,7 +6,7 @@
 #   ./scripts/dump_db.sh 1001     — 查看指定 user_id 的完整信息
 # ============================================================
 
-MYSQL_CMD="mysql -u chatroom -p'Ch@tRoom2026.Dev' chatroom"
+MYSQL_CMD="mysql -u chatroom -p'Chatroom@2026#Secure' chatroom"
 REDIS_CMD="redis-cli"
 
 echo "=========================================="

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "MessageType.hpp"
+#include "service/MessageType.hpp"
 #include <vector>
 #include <string>
 #include <cstdint>

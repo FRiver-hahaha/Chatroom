@@ -1,4 +1,4 @@
-#include "server.hpp"
+#include "network/server.hpp"
 #include <iostream>
 #include <chrono>
 #include <cstring>

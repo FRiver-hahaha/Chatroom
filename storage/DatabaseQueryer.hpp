@@ -1,7 +1,7 @@
 #pragma once
 
-#include "MessageType.hpp"
-#include "SessionState.hpp"
+#include "service/MessageType.hpp"
+#include "service/SessionState.hpp"
 #include "DatabaseQueryResult.hpp"
 #include "StorageManager.hpp"
 #include <memory>

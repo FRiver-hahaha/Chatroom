@@ -20,9 +20,9 @@
 #include <mutex>
 #include <queue>
 
-#include "MessageParser.hpp"
-#include "DatabaseQueryer.hpp"
-#include "SessionState.hpp"
+#include "service/MessageParser.hpp"
+#include "storage/DatabaseQueryer.hpp"
+#include "service/SessionState.hpp"
 
 namespace chatroom {
 
@@ -98,7 +98,7 @@ struct Connection {
 };
 
 }
-#include "MessageDispatcher.hpp"
+#include "service/MessageDispatcher.hpp"
 
 
 namespace chatroom {

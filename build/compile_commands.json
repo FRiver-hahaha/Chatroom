@@ -1,0 +1,44 @@
+[
+{
+  "directory": "/home/friver/Chatroom/build",
+  "command": "/usr/bin/c++  -I/home/friver/Chatroom -I/home/friver/Chatroom/build/generated -I/home/friver/Chatroom/build -I/usr/include/hiredis -I/usr/include/mysql -g -std=c++17 -Wall -Wextra -Wpedantic -Wshadow -o CMakeFiles/server.dir/main.cpp.o -c /home/friver/Chatroom/main.cpp",
+  "file": "/home/friver/Chatroom/main.cpp",
+  "output": "CMakeFiles/server.dir/main.cpp.o"
+},
+{
+  "directory": "/home/friver/Chatroom/build",
+  "command": "/usr/bin/c++  -I/home/friver/Chatroom -I/home/friver/Chatroom/build/generated -I/home/friver/Chatroom/build -I/usr/include/hiredis -I/usr/include/mysql -g -std=c++17 -Wall -Wextra -Wpedantic -Wshadow -o CMakeFiles/server.dir/network/server.cpp.o -c /home/friver/Chatroom/network/server.cpp",
+  "file": "/home/friver/Chatroom/network/server.cpp",
+  "output": "CMakeFiles/server.dir/network/server.cpp.o"
+},
+{
+  "directory": "/home/friver/Chatroom/build",
+  "command": "/usr/bin/c++  -I/home/friver/Chatroom -I/home/friver/Chatroom/build/generated -I/home/friver/Chatroom/build -I/usr/include/hiredis -I/usr/include/mysql -g -std=c++17 -Wall -Wextra -Wpedantic -Wshadow -o CMakeFiles/server.dir/network/threadPool.cpp.o -c /home/friver/Chatroom/network/threadPool.cpp",
+  "file": "/home/friver/Chatroom/network/threadPool.cpp",
+  "output": "CMakeFiles/server.dir/network/threadPool.cpp.o"
+},
+{
+  "directory": "/home/friver/Chatroom/build",
+  "command": "/usr/bin/c++  -I/home/friver/Chatroom -I/home/friver/Chatroom/build/generated -I/home/friver/Chatroom/build -I/usr/include/hiredis -I/usr/include/mysql -g -std=c++17 -Wall -Wextra -Wpedantic -Wshadow -o CMakeFiles/server.dir/storage/StorageManager.cpp.o -c /home/friver/Chatroom/storage/StorageManager.cpp",
+  "file": "/home/friver/Chatroom/storage/StorageManager.cpp",
+  "output": "CMakeFiles/server.dir/storage/StorageManager.cpp.o"
+},
+{
+  "directory": "/home/friver/Chatroom/build",
+  "command": "/usr/bin/c++  -I/home/friver/Chatroom -I/home/friver/Chatroom/build/generated -I/home/friver/Chatroom/build -I/usr/include/hiredis -I/usr/include/mysql -g -std=c++17 -Wall -Wextra -Wpedantic -Wshadow -o CMakeFiles/server.dir/chatroom.pb.cc.o -c /home/friver/Chatroom/build/chatroom.pb.cc",
+  "file": "/home/friver/Chatroom/build/chatroom.pb.cc",
+  "output": "CMakeFiles/server.dir/chatroom.pb.cc.o"
+},
+{
+  "directory": "/home/friver/Chatroom/build",
+  "command": "/usr/bin/c++  -I/home/friver/Chatroom -I/home/friver/Chatroom/build/generated -I/home/friver/Chatroom/build -g -std=c++17 -Wall -Wextra -Wpedantic -o CMakeFiles/client.dir/client/client.cpp.o -c /home/friver/Chatroom/client/client.cpp",
+  "file": "/home/friver/Chatroom/client/client.cpp",
+  "output": "CMakeFiles/client.dir/client/client.cpp.o"
+},
+{
+  "directory": "/home/friver/Chatroom/build",
+  "command": "/usr/bin/c++  -I/home/friver/Chatroom -I/home/friver/Chatroom/build/generated -I/home/friver/Chatroom/build -g -std=c++17 -Wall -Wextra -Wpedantic -o CMakeFiles/client.dir/chatroom.pb.cc.o -c /home/friver/Chatroom/build/chatroom.pb.cc",
+  "file": "/home/friver/Chatroom/build/chatroom.pb.cc",
+  "output": "CMakeFiles/client.dir/chatroom.pb.cc.o"
+}
+]

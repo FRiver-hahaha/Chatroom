@@ -2,7 +2,7 @@
 
 #include "MessageType.hpp"
 #include "MessageParser.hpp"
-#include "DatabaseQueryResult.hpp"
+#include "storage/DatabaseQueryResult.hpp"
 #include <memory>
 #include <iostream>
 #include <functional>
