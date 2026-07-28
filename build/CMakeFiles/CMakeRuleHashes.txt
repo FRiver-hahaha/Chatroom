@@ -1,2 +1,0 @@
-# Hashes of file build rules.
-d36c53ddd395102e6a81c27f5ce5c358 chatroom.pb.h

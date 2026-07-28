@@ -1,4 +1,0 @@
-/home/friver/Chatroom/build/CMakeFiles/server.dir
-/home/friver/Chatroom/build/CMakeFiles/client.dir
-/home/friver/Chatroom/build/CMakeFiles/edit_cache.dir
-/home/friver/Chatroom/build/CMakeFiles/rebuild_cache.dir
