@@ -18,7 +18,7 @@ int main() {
     signal(SIGTERM, signal_handler);
 
     auto storage = std::make_shared<StorageManager>();
-    if (!storage->connect("localhost", "chatroom", "Ch@tRoom2026.Dev", "chatroom")) {
+    if (!storage->connect("localhost", "chatroom", "Chatroom@2026#Secure", "chatroom")) {
         std::cerr << "[Main] 数据库连接失败，将以 mock 模式运行" << std::endl;
     }
 

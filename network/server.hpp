@@ -20,6 +20,8 @@
 #include <mutex>
 #include <queue>
 
+#include <sys/eventfd.h>
+
 #include "service/MessageParser.hpp"
 #include "storage/DatabaseQueryer.hpp"
 #include "service/SessionState.hpp"
@@ -32,6 +34,7 @@ constexpr int HEARTBEAT_INTERVAL = 30;
 constexpr int HEARTBEAT_TIMEOUT = 90;
 constexpr uint64_t ACCEPT_TAG = 0xFFFFFFFFFFFFFFFEULL;
 constexpr uint64_t TIMEOUT_TAG = 0xFFFFFFFFFFFFFFFFULL;
+constexpr uint64_t WAKEUP_TAG  = 0xFFFFFFFFFFFFFFFDULL;
 
 class Server;
 class MessageDispatcher;
@@ -120,6 +123,7 @@ public:
     
     void send_to(Connection* conn, const std::string& data);
     void send_to_async(int fd, const std::string& data);
+    void wakeup();
     void close_connection(Connection* conn);
     void close_connection(int fd);
     
@@ -150,6 +154,7 @@ private:
     void submit_recv(Connection* conn);
     void submit_send(Connection* conn);
     void submit_timeout();
+    void submit_wakeup();
 
     void handle_cqe(struct io_uring_cqe* cqe);
     void handle_accept(int fd);
@@ -162,6 +167,7 @@ private:
 
     struct io_uring ring_;
     int listen_fd_ = -1;
+    int wakeup_fd_ = -1;
 
     using ConnectionPtr = std::shared_ptr<Connection>;
     std::unordered_map<int, ConnectionPtr> conns_;

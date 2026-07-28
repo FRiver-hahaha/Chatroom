@@ -1,4 +1,4 @@
-#include "network/server.hpp"
+#include "server.hpp"
 #include <iostream>
 #include <chrono>
 #include <cstring>
@@ -14,6 +14,10 @@ Server::~Server() {
     if (listen_fd_ > 0) {
         close(listen_fd_);
         listen_fd_ = -1;
+    }
+    if (wakeup_fd_ >= 0) {
+        close(wakeup_fd_);
+        wakeup_fd_ = -1;
     }
 }
 
@@ -92,8 +96,18 @@ void Server::send_to_async(int fd, const std::string& data) {
     
     std::lock_guard<std::mutex> lock(send_mutex_);
     pending_sends_.push({fd, packed});
+
+    // 唤醒 io_uring 主循环，立即刷新待发送队列
+    wakeup();
 }
- 
+
+void Server::wakeup() {
+    if (wakeup_fd_ >= 0) {
+        uint64_t val = 1;
+        ::write(wakeup_fd_, &val, sizeof(val));
+    }
+}
+
 void Server::flush_pending_sends() {
     std::lock_guard<std::mutex> lock(send_mutex_);
     while (!pending_sends_.empty()) {
@@ -146,6 +160,15 @@ bool Server::init_uring() {
 
     std::cout << "[Server] io_uring ready: SQ=" << *ring_.sq.kring_entries
               << ", CQ=" << *ring_.cq.kring_entries << ", SQPOLL=on" << std::endl;
+
+    // 创建 eventfd 用于唤醒 io_uring 主循环
+    wakeup_fd_ = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
+    if (wakeup_fd_ < 0) {
+        std::cerr << "[Server] eventfd creation failed: " << strerror(errno) << std::endl;
+        return false;
+    }
+    submit_wakeup();
+
     return true;
 }
 
@@ -225,12 +248,26 @@ void Server::submit_timeout() {
     io_uring_sqe_set_data64(sqe, TIMEOUT_TAG);
 }
 
+void Server::submit_wakeup() {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+    if (!sqe) return;
+
+    static uint64_t dummy;
+    io_uring_prep_read(sqe, wakeup_fd_, &dummy, sizeof(dummy), 0);
+    io_uring_sqe_set_data64(sqe, WAKEUP_TAG);
+}
+
 void Server::handle_cqe(struct io_uring_cqe* cqe) {
     uint64_t tag = io_uring_cqe_get_data64(cqe);
     int res = cqe->res;
 
     if (tag == TIMEOUT_TAG) {
         handle_timeout();
+        return;
+    }
+
+    if (tag == WAKEUP_TAG) {
+        submit_wakeup();  // 重新注册，等待下次唤醒
         return;
     }
 
