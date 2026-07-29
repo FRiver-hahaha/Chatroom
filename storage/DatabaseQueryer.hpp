@@ -17,468 +17,371 @@ public:
         : storage_(storage) {}
 
     QueryResult query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        int type_val = static_cast<int>(msg.type);
-
-        if (type_val >= 1 && type_val < 100) {
-            return query_account(conn_state, msg);
-        } else if (type_val >= 100 && type_val < 200) {
-            return query_friend(conn_state, msg);
-        } else if (type_val >= 200 && type_val < 300) {
-            return query_group(conn_state, msg);
-        } else if (type_val >= 300 && type_val < 400) {
-            return query_chat(conn_state, msg);
-        } else if (type_val >= 400 && type_val < 500) {
-            return query_file(conn_state, msg);
-        }
-
-        result.success = false;
-        result.error_message = "未知消息类型";
-        return result;
+        int tv = static_cast<int>(msg.type);
+        if (tv >= 1 && tv < 100)       return query_account(conn_state, msg);
+        if (tv >= 100 && tv < 200)     return query_friend(conn_state, msg);
+        if (tv >= 200 && tv < 300)     return query_group(conn_state, msg);
+        if (tv >= 300 && tv < 400)     return query_chat(conn_state, msg);
+        if (tv >= 400 && tv < 500)     return query_file(conn_state, msg);
+        return fail("未知消息类型");
     }
 
 private:
     static std::pair<std::string, std::string> split_two(const std::string& s) {
         size_t pos = s.find('\n');
-        if (pos == std::string::npos) return {s, ""};
-        return {s.substr(0, pos), s.substr(pos + 1)};
+        return (pos == std::string::npos) ? std::make_pair(s, std::string{})
+               : std::make_pair(s.substr(0, pos), s.substr(pos + 1));
     }
 
-    // ===== 账号模块 =====
+    static QueryResult fail(const std::string& msg) {
+        QueryResult r; r.success = false; r.error_message = msg; return r;
+    }
+
+    // helper: extract target_id from message
+    static uint64_t extract_target(const Message& msg) {
+        return msg.target_id != 0 ? msg.target_id : std::stoull(msg.payload);
+    }
+
+    // helper: extract group_id and target_id from admin-style message
+    static std::pair<uint64_t, uint64_t> extract_group_target(const Message& msg) {
+        uint64_t gid = msg.group_id, tid = msg.target_id;
+        if (gid == 0 || tid == 0) {
+            auto parts = split_two(msg.payload);
+            if (gid == 0) gid = std::stoull(parts.first);
+            if (tid == 0) tid = std::stoull(parts.second);
+        }
+        return {gid, tid};
+    }
+
+    // check login + storage guards, returns false if blocked
+    bool check_guards(SessionState st, QueryResult& r) {
+        if (st != SessionState::LOGGED_IN) { r = fail("请先登录"); return false; }
+        if (!storage_) { r = fail("存储服务未就绪"); return false; }
+        return true;
+    }
+
+    // simple storage op that just needs target_id
+    using StorageBoolOp = bool (StorageManager::*)(uint64_t, uint64_t);
+    QueryResult do_friend_op(const Message& msg, StorageBoolOp op, const std::string& err) {
+        QueryResult r;
+        uint64_t tid = extract_target(msg);
+        r.success = (storage_.get()->*op)(msg.sender_id, tid);
+        if (!r.success) r.error_message = err;
+        return r;
+    }
+
+    // ===== Account =====
     QueryResult query_account(SessionState conn_state, const Message& msg) {
         switch (msg.type) {
-            case MessageType::LOGIN_REQ:         return handle_login_query(conn_state, msg);
-            case MessageType::REGISTER_REQ:      return handle_register_query(conn_state, msg);
-            case MessageType::LOGOUT_REQ:        return handle_logout_query(conn_state, msg);
-            case MessageType::VERIFY_CODE_REQ:   return handle_verify_code_query(conn_state, msg);
-            case MessageType::PASSWORD_RESET_REQ:return handle_password_reset_query(conn_state, msg);
-            default: {
-                QueryResult r; r.success = false;
-                r.error_message = "未知账号操作"; return r;
-            }
+            case MessageType::LOGIN_REQ:          return handle_login_query(conn_state, msg);
+            case MessageType::REGISTER_REQ:       return handle_register_query(conn_state, msg);
+            case MessageType::LOGOUT_REQ:         return handle_logout_query(conn_state, msg);
+            case MessageType::VERIFY_CODE_REQ:    return handle_verify_code_query(conn_state, msg);
+            case MessageType::PASSWORD_RESET_REQ: return handle_password_reset_query(conn_state, msg);
+            case MessageType::DELETE_ACCOUNT_REQ: return handle_delete_account_query(conn_state, msg);
+            default: return fail("未知账号操作");
         }
     }
 
     QueryResult handle_login_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        if (conn_state == SessionState::LOGGED_IN) {
-            result.success = false;
-            result.error_message = "您已登录，请勿重复登录";
-            return result;
-        }
-
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
+        if (conn_state == SessionState::LOGGED_IN) return fail("您已登录，请勿重复登录");
+        if (!storage_) return fail("存储服务未就绪");
 
         auto [username, password] = split_two(msg.payload);
+        if (!storage_->verify_password(username, password)) return fail("用户名或密码错误");
 
-        if (!storage_->verify_password(username, password)) {
-            result.success = false;
-            result.error_message = "用户名或密码错误";
-            return result;
-        }
+        auto ur = storage_->get_user_by_username(username);
+        if (!ur.success) return ur;
+        if (ur.user_status == 2) return fail("账号已被封禁，无法登录");
+        if (ur.user_status == 0) return fail("账号未激活，无法登录");
 
-        auto user_result = storage_->get_user_by_username(username);
-        if (!user_result.success) return user_result;
-
-        std::string token = storage_->create_session(user_result.user_id, username);
-        storage_->set_online(user_result.user_id);
-
-        user_result.friend_list = storage_->get_friends(user_result.user_id);
-        user_result.token = token;
-        user_result.offline_messages = storage_->get_offline_messages(user_result.user_id);
-        return user_result;
+        ur.token = storage_->create_session(ur.user_id, username);
+        storage_->set_online(ur.user_id);
+        ur.friend_list = storage_->get_friends(ur.user_id);
+        ur.offline_messages = storage_->get_offline_messages(ur.user_id);
+        return ur;
     }
 
-    QueryResult handle_register_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        auto [username, rest] = split_two(msg.payload);
-        auto [password, nickname] = split_two(rest);
+    QueryResult handle_register_query(SessionState, const Message& msg) {
+        QueryResult r;
+        if (!storage_) return fail("存储服务未就绪");
+        auto [username, password_nick] = split_two(msg.payload);
+        auto [password, nickname] = split_two(password_nick);
         if (nickname.empty()) nickname = username;
 
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
+        if (storage_->user_exists(username)) return fail("用户名已存在");
 
-        return storage_->create_user(username, password, nickname);
+        r = storage_->create_user(username, password, nickname);
+        if (r.success) r.token = storage_->create_session(r.user_id, username);
+        return r;
     }
 
-    QueryResult handle_logout_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
-
+    QueryResult handle_logout_query(SessionState, const Message& msg) {
+        if (!storage_) return fail("存储服务未就绪");
         if (msg.sender_id != 0) {
             storage_->clear_session(msg.sender_id);
             storage_->set_offline(msg.sender_id);
         }
-        result.success = true;
-        return result;
+        return {true, "", 0, "", "", false};
     }
 
-    QueryResult handle_verify_code_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        result.success = true;
-        result.verify_code = "123456";
-        return result;
+    QueryResult handle_verify_code_query(SessionState, const Message&) {
+        QueryResult r; r.success = true; r.verify_code = "123456"; return r;
     }
 
-    QueryResult handle_password_reset_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
-
-        auto [user_id_str, new_password] = split_two(msg.payload);
-        uint64_t user_id = std::stoull(user_id_str);
-        bool ok = storage_->update_password(user_id, new_password);
-        result.success = ok;
-        if (!ok) result.error_message = "密码重置失败";
-        return result;
+    QueryResult handle_password_reset_query(SessionState, const Message& msg) {
+        if (!storage_) return fail("存储服务未就绪");
+        auto [uid_str, new_pass] = split_two(msg.payload);
+        uint64_t uid = std::stoull(uid_str);
+        QueryResult r;
+        r.success = storage_->update_password(uid, new_pass);
+        if (!r.success) r.error_message = "重置密码失败";
+        return r;
     }
 
-    // ===== 好友模块 =====
+    QueryResult handle_delete_account_query(SessionState, const Message& msg) {
+        if (!storage_) return fail("存储服务未就绪");
+        auto user = storage_->get_user_by_id(msg.sender_id);
+        if (!user.success) return fail("用户不存在");
+        if (!storage_->verify_password(user.username, msg.payload)) return fail("密码错误，无法注销账号");
+        QueryResult r;
+        r.success = storage_->delete_user(msg.sender_id);
+        if (!r.success) r.error_message = "注销失败";
+        return r;
+    }
+
+    // ===== Friend =====
     QueryResult query_friend(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        if (conn_state != SessionState::LOGGED_IN) {
-            result.success = false;
-            result.error_message = "请先登录";
-            return result;
-        }
-
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
+        QueryResult r;
+        if (conn_state != SessionState::LOGGED_IN) return fail("请先登录");
+        if (!storage_) return fail("存储服务未就绪");
 
         switch (msg.type) {
-            case MessageType::ADD_FRIEND_REQ:     return handle_add_friend_query(conn_state, msg);
-            case MessageType::DELETE_FRIEND_REQ:  return handle_delete_friend_query(conn_state, msg);
-            case MessageType::QUERY_FRIEND_REQ:   return handle_query_friend_query(conn_state, msg);
-            case MessageType::BLOCK_FRIEND_REQ:   return handle_block_friend_query(conn_state, msg);
-            default: { result.success = false; result.error_message = "未知好友操作"; return result; }
+            case MessageType::ADD_FRIEND_REQ:     return handle_add_friend_query(msg);
+            case MessageType::DELETE_FRIEND_REQ:  return do_friend_op(msg, &StorageManager::remove_friend, "删除好友失败");
+            case MessageType::QUERY_FRIEND_REQ: { r.success = true; r.friend_list = storage_->get_friends(msg.sender_id); return r; }
+            case MessageType::BLOCK_FRIEND_REQ:   return do_friend_op(msg, &StorageManager::block_friend, "屏蔽失败");
+            case MessageType::UNBLOCK_FRIEND_REQ: return do_friend_op(msg, &StorageManager::unblock_friend, "解除屏蔽失败");
+            default: return fail("未知好友操作");
         }
     }
 
-    QueryResult handle_add_friend_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t target_id = msg.target_id;
-        if (target_id == 0) target_id = std::stoull(msg.payload);
-
-        if (!storage_->get_user_by_id(target_id).success) {
-            result.success = false;
-            result.error_message = "目标用户不存在";
-            return result;
-        }
-
-        if (storage_->is_friend(msg.sender_id, target_id)) {
-            result.success = false;
-            result.error_message = "已经是好友了";
-            return result;
-        }
-
-        result.success = storage_->add_friend(msg.sender_id, target_id);
-        if (!result.success) result.error_message = "添加好友失败";
-        return result;
+    QueryResult handle_add_friend_query(const Message& msg) {
+        QueryResult r;
+        uint64_t tid = extract_target(msg);
+        if (!storage_->get_user_by_id(tid).success) return fail("目标用户不存在");
+        if (storage_->is_friend(msg.sender_id, tid)) return fail("已经是好友了");
+        r.success = storage_->add_friend(msg.sender_id, tid);
+        if (!r.success) r.error_message = "添加好友失败";
+        return r;
     }
 
-    QueryResult handle_delete_friend_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t target_id = msg.target_id;
-        if (target_id == 0) target_id = std::stoull(msg.payload);
-        result.success = storage_->remove_friend(msg.sender_id, target_id);
-        if (!result.success) result.error_message = "删除好友失败";
-        return result;
-    }
-
-    QueryResult handle_query_friend_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        result.success = true;
-        result.friend_list = storage_->get_friends(msg.sender_id);
-        return result;
-    }
-
-    QueryResult handle_block_friend_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t target_id = msg.target_id;
-        if (target_id == 0) target_id = std::stoull(msg.payload);
-        result.success = storage_->block_friend(msg.sender_id, target_id);
-        if (!result.success) result.error_message = "屏蔽失败";
-        return result;
-    }
-
-    // ===== 群组模块 =====
+    // ===== Group =====
     QueryResult query_group(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        if (conn_state != SessionState::LOGGED_IN) {
-            result.success = false;
-            result.error_message = "请先登录";
-            return result;
-        }
-
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
+        QueryResult r;
+        if (!check_guards(conn_state, r)) return r;
 
         switch (msg.type) {
-            case MessageType::CREATE_GROUP_REQ:          return handle_create_group_query(conn_state, msg);
-            case MessageType::DISMISS_GROUP_REQ:         return handle_dismiss_group_query(conn_state, msg);
-            case MessageType::JOIN_GROUP_REQ:            return handle_join_group_query(conn_state, msg);
-            case MessageType::QUIT_GROUP_REQ:            return handle_quit_group_query(conn_state, msg);
-            case MessageType::QUERY_GROUP_LIST_REQ:      return handle_query_group_list_query(conn_state, msg);
-            case MessageType::QUERY_GROUP_MEMBERS_REQ:   return handle_query_group_members_query(conn_state, msg);
-            default: { result.success = false; result.error_message = "未知群组操作"; return result; }
+            case MessageType::CREATE_GROUP_REQ:          return handle_create_group_query(msg);
+            case MessageType::DISMISS_GROUP_REQ:         return handle_dismiss_group_query(msg);
+            case MessageType::JOIN_GROUP_REQ:            return handle_join_group_query(msg);
+            case MessageType::QUIT_GROUP_REQ:            return handle_quit_group_query(msg);
+            case MessageType::QUERY_GROUP_LIST_REQ:      return handle_query_group_list_query(msg);
+            case MessageType::QUERY_GROUP_MEMBERS_REQ:   return handle_query_group_members_query(msg);
+            case MessageType::ADD_GROUP_ADMIN_REQ:       return handle_add_group_admin_query(msg);
+            case MessageType::REMOVE_GROUP_ADMIN_REQ:    return handle_remove_group_admin_query(msg);
+            case MessageType::APPROVE_JOIN_GROUP_REQ:    return handle_approve_join_group_query(msg);
+            case MessageType::REMOVE_GROUP_MEMBER_REQ:   return handle_remove_group_member_query(msg);
+            default: return fail("未知群组操作");
         }
     }
 
-    QueryResult handle_create_group_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        auto [group_name, description] = split_two(msg.payload);
-
-        uint64_t group_id = storage_->create_group(group_name, description, msg.sender_id);
-        result.success = (group_id != 0);
-        if (result.success) {
-            result.group_id = group_id;
-        } else {
-            result.error_message = "创建群组失败";
-        }
-        return result;
+    QueryResult handle_create_group_query(const Message& msg) {
+        QueryResult r;
+        auto [name, desc] = split_two(msg.payload);
+        uint64_t gid = storage_->create_group(name, desc, msg.sender_id);
+        r.success = (gid != 0);
+        if (r.success) r.group_id = gid; else r.error_message = "创建群组失败";
+        return r;
     }
 
-    QueryResult handle_dismiss_group_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t group_id = msg.group_id;
-        if (group_id == 0) group_id = std::stoull(msg.payload);
-        result.success = storage_->dismiss_group(group_id, msg.sender_id);
-        if (!result.success) result.error_message = "解散群组失败";
-        return result;
+    QueryResult handle_dismiss_group_query(const Message& msg) {
+        QueryResult r;
+        uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
+        r.success = storage_->dismiss_group(gid, msg.sender_id);
+        if (!r.success) r.error_message = "解散群组失败";
+        return r;
     }
 
-    QueryResult handle_join_group_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t group_id = msg.group_id;
-        if (group_id == 0) group_id = std::stoull(msg.payload);
-
-        if (storage_->is_group_member(group_id, msg.sender_id)) {
-            result.success = false;
-            result.error_message = "已经是群组成员";
-            return result;
-        }
-
-        result.success = storage_->join_group(group_id, msg.sender_id);
-        if (result.success) {
-            result.group_id = group_id;
-        } else {
-            result.error_message = "加入群组失败";
-        }
-        return result;
+    QueryResult handle_join_group_query(const Message& msg) {
+        QueryResult r;
+        uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
+        if (storage_->is_group_member(gid, msg.sender_id)) return fail("已经是群组成员");
+        r.success = storage_->join_group(gid, msg.sender_id);
+        if (r.success) { r.group_id = gid; r.group_members = storage_->get_group_members(gid); }
+        else r.error_message = "加入群组失败";
+        return r;
     }
 
-    QueryResult handle_quit_group_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t group_id = msg.group_id;
-        if (group_id == 0) group_id = std::stoull(msg.payload);
-        result.success = storage_->quit_group(group_id, msg.sender_id);
-        if (!result.success) result.error_message = "退出群组失败";
-        return result;
+    QueryResult handle_quit_group_query(const Message& msg) {
+        QueryResult r;
+        uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
+        r.success = storage_->quit_group(gid, msg.sender_id);
+        if (!r.success) r.error_message = "退出群组失败";
+        return r;
     }
 
-    QueryResult handle_query_group_list_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        result.success = true;
-        result.group_list = storage_->get_user_groups(msg.sender_id);
-        return result;
+    QueryResult handle_query_group_list_query(const Message& msg) {
+        QueryResult r; r.success = true;
+        r.group_list = storage_->get_user_groups(msg.sender_id);
+        return r;
     }
 
-    QueryResult handle_query_group_members_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t group_id = msg.group_id;
-        if (group_id == 0) group_id = std::stoull(msg.payload);
-
-        if (!storage_->is_group_member(group_id, msg.sender_id)) {
-            result.success = false;
-            result.error_message = "你不是该群组成员";
-            return result;
-        }
-
-        result.success = true;
-        result.group_members = storage_->get_group_members(group_id);
-        return result;
+    QueryResult handle_query_group_members_query(const Message& msg) {
+        uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
+        if (!storage_->is_group_member(gid, msg.sender_id)) return fail("你不是该群组成员");
+        QueryResult r; r.success = true;
+        r.group_members = storage_->get_group_members(gid);
+        return r;
     }
 
-    // ===== 聊天模块 =====
+    // Group admin operations share identical structure — extract gid+tid, call storage
+    using GroupAdminOp = bool (StorageManager::*)(uint64_t, uint64_t, uint64_t);
+    QueryResult do_group_admin_op(const Message& msg, GroupAdminOp op, const std::string& err) {
+        QueryResult r;
+        auto [gid, tid] = extract_group_target(msg);
+        r.success = (storage_.get()->*op)(gid, msg.sender_id, tid);
+        if (r.success) r.group_id = gid;
+        else r.error_message = err;
+        return r;
+    }
+
+    QueryResult handle_add_group_admin_query(const Message& msg) {
+        return do_group_admin_op(msg, &StorageManager::add_admin, "添加管理员失败");
+    }
+    QueryResult handle_remove_group_admin_query(const Message& msg) {
+        return do_group_admin_op(msg, &StorageManager::remove_admin, "移除管理员失败");
+    }
+    QueryResult handle_approve_join_group_query(const Message& msg) {
+        return do_group_admin_op(msg, &StorageManager::approve_join, "批准加入失败");
+    }
+    QueryResult handle_remove_group_member_query(const Message& msg) {
+        return do_group_admin_op(msg, &StorageManager::remove_member, "移除群组成员失败");
+    }
+
+    // ===== Chat =====
     QueryResult query_chat(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        if (conn_state != SessionState::LOGGED_IN) {
-            result.success = false;
-            result.error_message = "请先登录";
-            return result;
-        }
-
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
+        QueryResult r;
+        if (!check_guards(conn_state, r)) return r;
 
         switch (msg.type) {
-            case MessageType::PRIVATE_CHAT_REQ:  return handle_private_chat_query(conn_state, msg);
-            case MessageType::GROUP_CHAT_REQ:    return handle_group_chat_query(conn_state, msg);
-            case MessageType::GET_HISTORY_REQ:   return handle_get_history_query(conn_state, msg);
-            default: { result.success = false; result.error_message = "未知聊天操作"; return result; }
+            case MessageType::PRIVATE_CHAT_REQ:  return handle_private_chat_query(msg);
+            case MessageType::GROUP_CHAT_REQ:    return handle_group_chat_query(msg);
+            case MessageType::GET_HISTORY_REQ:   return handle_get_history_query(msg);
+            default: return fail("未知聊天操作");
         }
     }
 
-    QueryResult handle_private_chat_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-
-        if (!storage_->is_friend(msg.sender_id, msg.target_id)) {
-            result.success = false;
-            result.error_message = "不是好友，无法发送私聊";
-            return result;
-        }
+    QueryResult handle_private_chat_query(const Message& msg) {
+        if (!storage_->is_friend(msg.sender_id, msg.target_id)) return fail("不是好友，无法发送私聊");
+        if (storage_->is_blocked_by(msg.target_id, msg.sender_id)) return fail("你已被对方拉黑，无法发送消息");
 
         storage_->save_message(msg.sender_id, msg.target_id, msg.payload,
                                static_cast<int>(MessageType::PRIVATE_CHAT_REQ));
 
         if (!storage_->is_online(msg.target_id)) {
             auto sender = storage_->get_user_by_id(msg.sender_id);
-            std::string name = sender.success ? sender.username
-                               : std::to_string(msg.sender_id);
+            std::string name = sender.success ? sender.username : std::to_string(msg.sender_id);
             storage_->save_offline_message(msg.target_id, msg.sender_id, name, msg.payload);
         }
-
-        result.success = true;
-        return result;
+        return {true, "", 0, "", "", false};
     }
 
-    QueryResult handle_group_chat_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-
-        if (!storage_->is_group_member(msg.group_id, msg.sender_id)) {
-            result.success = false;
-            result.error_message = "你不在该群组中";
-            return result;
-        }
-
+    QueryResult handle_group_chat_query(const Message& msg) {
+        if (!storage_->is_group_member(msg.group_id, msg.sender_id)) return fail("你不在该群组中");
         storage_->save_group_message(msg.group_id, msg.sender_id, msg.payload);
-
-        result.success = true;
-        result.group_members = storage_->get_group_members(msg.group_id);
-        return result;
+        QueryResult r; r.success = true;
+        r.group_members = storage_->get_group_members(msg.group_id);
+        return r;
     }
 
-    QueryResult handle_get_history_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-
+    QueryResult handle_get_history_query(const Message& msg) {
         auto [target_str, rest] = split_two(msg.payload);
         auto [group_str, limit_str] = split_two(rest);
-        uint64_t target_id = target_str.empty() ? 0 : std::stoull(target_str);
-        uint64_t group_id = group_str.empty() ? 0 : std::stoull(group_str);
+        uint64_t tid = target_str.empty() ? 0 : std::stoull(target_str);
+        uint64_t gid = group_str.empty() ? 0 : std::stoull(group_str);
         int limit = limit_str.empty() ? 50 : std::stoi(limit_str);
 
-        if (group_id != 0) {
-            result.history = storage_->get_group_history(group_id, limit);
-        } else if (target_id != 0) {
-            result.history = storage_->get_history(msg.sender_id, target_id, limit);
-        } else {
-            result.success = false;
-            result.error_message = "缺少查询参数";
-            return result;
-        }
-
-        result.success = true;
-        return result;
+        if (gid == 0 && tid == 0) return fail("缺少查询参数");
+        QueryResult r; r.success = true;
+        r.history = (gid != 0) ? storage_->get_group_history(gid, limit)
+                              : storage_->get_history(msg.sender_id, tid, limit);
+        return r;
     }
 
-    // ===== 文件模块 =====
+    // ===== File =====
     QueryResult query_file(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        if (conn_state != SessionState::LOGGED_IN) {
-            result.success = false;
-            result.error_message = "请先登录";
-            return result;
-        }
-
-        if (!storage_) {
-            result.success = false;
-            result.error_message = "存储服务未就绪";
-            return result;
-        }
+        QueryResult r;
+        if (!check_guards(conn_state, r)) return r;
 
         switch (msg.type) {
-            case MessageType::FILE_UPLOAD_REQ:   return handle_file_upload_query(conn_state, msg);
-            case MessageType::FILE_DOWNLOAD_REQ:  return handle_file_download_query(conn_state, msg);
-            default: { result.success = false; result.error_message = "未知文件操作"; return result; }
+            case MessageType::FILE_UPLOAD_REQ:        return handle_file_upload_query(msg);
+            case MessageType::FILE_DOWNLOAD_REQ:      return handle_file_download_query(msg);
+            case MessageType::FILE_UPLOAD_CHUNK_REQ:  return handle_file_chunk_upload_query(msg);
+            default: return fail("未知文件操作");
         }
     }
 
-    QueryResult handle_file_upload_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-
-        // 创建文件存储目录
-        std::string file_dir = "/tmp/chatroom_files/";
-        mkdir(file_dir.c_str(), 0755);
-        
-        std::string file_path = file_dir + msg.payload;
-        
-        // 如果是完整文件（chunk_seq == 0）
+    QueryResult handle_file_upload_query(const Message& msg) {
+        QueryResult r;
+        mkdir("/tmp/chatroom_files/", 0755);
+        std::string path = "/tmp/chatroom_files/" + msg.payload;
         if (msg.chunk_seq == 0) {
-            // 直接写入整个文件
-            FILE* fp = fopen(file_path.c_str(), "wb");
-            if (!fp) {
-                result.success = false;
-                result.error_message = "无法创建文件";
-                return result;
-            }
+            FILE* fp = fopen(path.c_str(), "wb");
+            if (!fp) return fail("无法创建文件");
             fwrite(msg.file_data.data(), 1, msg.file_data.size(), fp);
             fclose(fp);
         }
-
-        uint64_t file_id = storage_->save_file_metadata(
-            msg.payload, msg.file_size, file_path,
-            msg.sender_id, msg.target_id);
-
-        result.success = (file_id != 0);
-        result.file_id = file_id;
-        result.file_name = msg.payload;
-        result.file_size = msg.file_size;
-        
-        if (!result.success) result.error_message = "文件上传失败";
-        return result;
+        uint64_t fid = storage_->save_file_metadata(msg.payload, msg.file_size, path,
+                                                     msg.sender_id, msg.target_id);
+        r.success = (fid != 0);
+        if (r.success) { r.file_id = fid; r.file_name = msg.payload; r.file_size = msg.file_size; }
+        else r.error_message = "文件上传失败";
+        return r;
     }
 
-    QueryResult handle_file_download_query(SessionState conn_state, const Message& msg) {
-        QueryResult result;
-        uint64_t file_id = msg.target_id;
-        if (file_id == 0) file_id = std::stoull(msg.payload);
+    QueryResult handle_file_chunk_upload_query(const Message& msg) {
+        // chunk upload: append to file, when last chunk arrives return final metadata
+        QueryResult r;
+        mkdir("/tmp/chatroom_files/", 0755);
+        std::string path = "/tmp/chatroom_files/" + msg.payload;
+        FILE* fp = fopen(path.c_str(), msg.chunk_seq == 0 ? "wb" : "ab");
+        if (!fp) return fail("无法写入文件");
+        fwrite(msg.file_data.data(), 1, msg.file_data.size(), fp);
+        fclose(fp);
 
-        auto file_info = storage_->get_file_info(file_id);
-        if (file_info.file_id == 0) {
-            result.success = false;
-            result.error_message = "文件不存在";
-            return result;
+        if (msg.chunk_seq == msg.total_chunks - 1 || msg.total_chunks <= 1) {
+            uint64_t fid = storage_->save_file_metadata(msg.payload, msg.file_size, path,
+                                                         msg.sender_id, msg.target_id);
+            r.success = (fid != 0);
+            if (r.success) { r.file_id = fid; r.file_name = msg.payload; r.file_size = msg.file_size; }
+            else r.error_message = "文件保存失败";
+        } else {
+            r.success = true;
         }
-
-        result.success = true;
-        result.offline_files.push_back(file_info);
-        return result;
+        return r;
     }
 
-private:
+    QueryResult handle_file_download_query(const Message& msg) {
+        QueryResult r;
+        uint64_t fid = msg.target_id; if (fid == 0) fid = std::stoull(msg.payload);
+        auto info = storage_->get_file_info(fid);
+        r.success = (info.file_id != 0);
+        if (r.success) { r.offline_files.push_back(info); }
+        else r.error_message = "文件不存在";
+        return r;
+    }
+
     std::shared_ptr<StorageManager> storage_;
 };
 

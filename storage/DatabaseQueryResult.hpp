@@ -16,6 +16,7 @@ struct QueryResult {
     std::string username;
     std::string nickname;
     bool is_online = false;
+    int user_status = 1;  // 0=inactive, 1=active, 2=banned
     
     // ===== 文件响应相关 =====
     uint64_t file_id = 0;

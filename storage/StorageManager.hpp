@@ -74,6 +74,7 @@ public:
     std::string create_session(uint64_t user_id, const std::string& username);
     bool verify_token(const std::string& token);
     bool clear_session(uint64_t user_id);
+    bool delete_user(uint64_t user_id);
 
     // 好友模块
     bool add_friend(uint64_t user_id, uint64_t friend_id);
@@ -81,6 +82,7 @@ public:
     bool is_friend(uint64_t user_id, uint64_t friend_id);
     bool block_friend(uint64_t user_id, uint64_t friend_id);
     bool unblock_friend(uint64_t user_id, uint64_t friend_id);
+    bool is_blocked_by(uint64_t user_id, uint64_t friend_id);
     std::vector<QueryResult::FriendInfo> get_friends(uint64_t user_id);
 
     // 群组模块

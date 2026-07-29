@@ -59,7 +59,7 @@ int main() {
         if (msg.type == MessageType::LOGIN_REQ && result.success) {
             server.register_user_fd(conn->user_id, conn->fd);
         }
-        if (msg.type == MessageType::LOGOUT_REQ) {
+        if (msg.type == MessageType::LOGOUT_REQ || msg.type == MessageType::DELETE_ACCOUNT_REQ) {
             server.unregister_user_fd(conn->user_id);
         }
     });
@@ -67,9 +67,12 @@ int main() {
     server.set_on_send([](Connection* conn, int result) {
     });
 
-    server.set_on_close([](Connection* conn) {
+    server.set_on_close([&](Connection* conn) {
         std::cout << "[Callback] 连接 fd=" << conn->fd
                   << " 已关闭 (user=" << conn->username << ")" << std::endl;
+        if (conn->user_id != 0) {
+            storage->set_offline(conn->user_id);
+        }
     });
 
     if (!server.start(8080)) {

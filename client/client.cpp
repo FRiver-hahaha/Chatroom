@@ -248,6 +248,30 @@ public:
         return true;
     }
 
+    bool delete_account(const std::string& password) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::DELETE_ACCOUNT_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_timestamp(time(nullptr));
+        msg.mutable_delete_account_req()->set_password(password);
+
+        if (!send_message(msg)) return false;
+
+        auto resp = wait_response(MessageType::DELETE_ACCOUNT_RSP);
+        if (resp.type() == static_cast<uint32_t>(MessageType::DELETE_ACCOUNT_RSP) && resp.has_delete_account_rsp()) {
+            if (resp.delete_account_rsp().success()) {
+                std::cout << "[成功] 账号已注销" << std::endl;
+                user_id_ = 0;
+                username_.clear();
+                token_.clear();
+                return true;
+            }
+            std::cerr << "[失败] " << resp.delete_account_rsp().error_message() << std::endl;
+        }
+        return false;
+    }
+
     // --- 好友 ---
 
     bool add_friend(uint64_t target_uid) {
@@ -290,6 +314,20 @@ public:
         if (!send_message(msg)) return false;
         auto resp = wait_response(MessageType::BLOCK_FRIEND_RSP);
         return handle_friend_op_resp(resp, "拉黑好友");
+    }
+
+    bool unblock_friend(uint64_t target_uid) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::UNBLOCK_FRIEND_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_target_id(target_uid);
+        msg.set_timestamp(time(nullptr));
+        msg.mutable_unblock_friend_req()->set_target_user_id(target_uid);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::UNBLOCK_FRIEND_RSP);
+        return handle_friend_op_resp(resp, "解除拉黑");
     }
 
     void query_friends() {
@@ -442,6 +480,74 @@ public:
                 std::cerr << "[失败] " << r.error_message() << std::endl;
             }
         }
+    }
+
+    bool add_group_admin(uint64_t gid, uint64_t target_uid) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::ADD_GROUP_ADMIN_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_group_id(gid);
+        msg.set_target_id(target_uid);
+        msg.set_timestamp(time(nullptr));
+        auto* body = msg.mutable_add_group_admin_req();
+        body->set_group_id(gid);
+        body->set_target_user_id(target_uid);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::ADD_GROUP_ADMIN_RSP);
+        return handle_group_op_resp(resp, "添加管理员");
+    }
+
+    bool remove_group_admin(uint64_t gid, uint64_t target_uid) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::REMOVE_GROUP_ADMIN_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_group_id(gid);
+        msg.set_target_id(target_uid);
+        msg.set_timestamp(time(nullptr));
+        auto* body = msg.mutable_remove_group_admin_req();
+        body->set_group_id(gid);
+        body->set_target_user_id(target_uid);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::REMOVE_GROUP_ADMIN_RSP);
+        return handle_group_op_resp(resp, "移除管理员");
+    }
+
+    bool approve_join_group(uint64_t gid, uint64_t target_uid) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::APPROVE_JOIN_GROUP_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_group_id(gid);
+        msg.set_target_id(target_uid);
+        msg.set_timestamp(time(nullptr));
+        auto* body = msg.mutable_approve_join_group_req();
+        body->set_group_id(gid);
+        body->set_target_user_id(target_uid);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::APPROVE_JOIN_GROUP_RSP);
+        return handle_group_op_resp(resp, "批准加入");
+    }
+
+    bool remove_group_member(uint64_t gid, uint64_t target_uid) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::REMOVE_GROUP_MEMBER_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_group_id(gid);
+        msg.set_target_id(target_uid);
+        msg.set_timestamp(time(nullptr));
+        auto* body = msg.mutable_remove_group_member_req();
+        body->set_group_id(gid);
+        body->set_target_user_id(target_uid);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::REMOVE_GROUP_MEMBER_RSP);
+        return handle_group_op_resp(resp, "移除群组成员");
     }
 
     // --- 聊天 ---
@@ -689,6 +795,9 @@ private:
         if (resp.has_block_friend_rsp()) {
             return check_resp(resp.block_friend_rsp());
         }
+        if (resp.has_unblock_friend_rsp()) {
+            return check_resp(resp.unblock_friend_rsp());
+        }
 
         std::cerr << "[错误] " << op_name << ": 未收到有效响应" << std::endl;
         return false;
@@ -707,6 +816,10 @@ private:
         if (resp.has_join_group_rsp()) return check(resp.join_group_rsp());
         if (resp.has_quit_group_rsp()) return check(resp.quit_group_rsp());
         if (resp.has_dismiss_group_rsp()) return check(resp.dismiss_group_rsp());
+        if (resp.has_add_group_admin_rsp()) return check(resp.add_group_admin_rsp());
+        if (resp.has_remove_group_admin_rsp()) return check(resp.remove_group_admin_rsp());
+        if (resp.has_approve_join_group_rsp()) return check(resp.approve_join_group_rsp());
+        if (resp.has_remove_group_member_rsp()) return check(resp.remove_group_member_rsp());
 
         std::cerr << "[错误] " << op_name << ": 未收到有效响应" << std::endl;
         return false;
@@ -819,9 +932,10 @@ void menu_friend(ChatClient& client) {
         std::cout << "  2. 添加好友" << std::endl;
         std::cout << "  3. 删除好友" << std::endl;
         std::cout << "  4. 拉黑好友" << std::endl;
+        std::cout << "  5. 解除拉黑" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(4);
+        int choice = read_choice(5);
         switch (choice) {
             case 0: return;
             case 1: client.query_friends(); break;
@@ -840,6 +954,11 @@ void menu_friend(ChatClient& client) {
                 client.block_friend(uid);
                 break;
             }
+            case 5: {
+                uint64_t uid = read_uint64("  请输入对方 user_id: ");
+                client.unblock_friend(uid);
+                break;
+            }
         }
         client.flush_notifications();
     }
@@ -853,9 +972,13 @@ void menu_group(ChatClient& client) {
         std::cout << "  3. 加入群组" << std::endl;
         std::cout << "  4. 退出群组" << std::endl;
         std::cout << "  5. 查看群成员" << std::endl;
+        std::cout << "  6. 添加管理员" << std::endl;
+        std::cout << "  7. 移除管理员" << std::endl;
+        std::cout << "  8. 批准加入" << std::endl;
+        std::cout << "  9. 移除成员" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(5);
+        int choice = read_choice(9);
         switch (choice) {
             case 0: return;
             case 1: client.query_group_list(); break;
@@ -879,6 +1002,30 @@ void menu_group(ChatClient& client) {
             case 5: {
                 uint64_t gid = read_uint64("  请输入 group_id: ");
                 client.query_group_members(gid);
+                break;
+            }
+            case 6: {
+                uint64_t gid = read_uint64("  请输入 group_id: ");
+                uint64_t uid = read_uint64("  请输入目标 user_id: ");
+                client.add_group_admin(gid, uid);
+                break;
+            }
+            case 7: {
+                uint64_t gid = read_uint64("  请输入 group_id: ");
+                uint64_t uid = read_uint64("  请输入目标 user_id: ");
+                client.remove_group_admin(gid, uid);
+                break;
+            }
+            case 8: {
+                uint64_t gid = read_uint64("  请输入 group_id: ");
+                uint64_t uid = read_uint64("  请输入目标 user_id: ");
+                client.approve_join_group(gid, uid);
+                break;
+            }
+            case 9: {
+                uint64_t gid = read_uint64("  请输入 group_id: ");
+                uint64_t uid = read_uint64("  请输入目标 user_id: ");
+                client.remove_group_member(gid, uid);
                 break;
             }
         }
@@ -991,9 +1138,10 @@ void main_menu(ChatClient& client) {
             std::cout << "  3. 聊天" << std::endl;
             std::cout << "  4. 文件传输" << std::endl;
             std::cout << "  5. 登出" << std::endl;
+            std::cout << "  6. 注销账号" << std::endl;
             std::cout << "  0. 退出" << std::endl;
 
-            int choice = read_choice(5);
+            int choice = read_choice(6);
             switch (choice) {
                 case 0:
                     client.logout();
@@ -1006,6 +1154,13 @@ void main_menu(ChatClient& client) {
                 case 5:
                     client.logout();
                     break;
+                case 6: {
+                    std::string pass = read_line("  请输入密码确认注销: ");
+                    if (client.delete_account(pass)) {
+                        return; // 注销后返回登录界面
+                    }
+                    break;
+                }
             }
         }
         client.flush_notifications();

@@ -45,6 +45,9 @@ public:
             case ChatMessage::kLogoutReq:
                 msg.payload = "";
                 break;
+            case ChatMessage::kDeleteAccountReq:
+                msg.payload = proto_msg.delete_account_req().password();
+                break;
             case ChatMessage::kAddFriendReq:
                 msg.payload = std::to_string(proto_msg.add_friend_req().target_user_id());
                 break;
@@ -56,6 +59,9 @@ public:
                 break;
             case ChatMessage::kBlockFriendReq:
                 msg.payload = std::to_string(proto_msg.block_friend_req().target_user_id());
+                break;
+            case ChatMessage::kUnblockFriendReq:
+                msg.payload = std::to_string(proto_msg.unblock_friend_req().target_user_id());
                 break;
             case ChatMessage::kCreateGroupReq:
                 msg.payload = proto_msg.create_group_req().group_name() + "\n"
@@ -75,6 +81,30 @@ public:
                 break;
             case ChatMessage::kQueryGroupMembersReq:
                 msg.payload = std::to_string(proto_msg.query_group_members_req().group_id());
+                break;
+            case ChatMessage::kAddGroupAdminReq:
+                msg.payload = std::to_string(proto_msg.add_group_admin_req().group_id()) + "\n"
+                            + std::to_string(proto_msg.add_group_admin_req().target_user_id());
+                msg.group_id = proto_msg.add_group_admin_req().group_id();
+                msg.target_id = proto_msg.add_group_admin_req().target_user_id();
+                break;
+            case ChatMessage::kRemoveGroupAdminReq:
+                msg.payload = std::to_string(proto_msg.remove_group_admin_req().group_id()) + "\n"
+                            + std::to_string(proto_msg.remove_group_admin_req().target_user_id());
+                msg.group_id = proto_msg.remove_group_admin_req().group_id();
+                msg.target_id = proto_msg.remove_group_admin_req().target_user_id();
+                break;
+            case ChatMessage::kApproveJoinGroupReq:
+                msg.payload = std::to_string(proto_msg.approve_join_group_req().group_id()) + "\n"
+                            + std::to_string(proto_msg.approve_join_group_req().target_user_id());
+                msg.group_id = proto_msg.approve_join_group_req().group_id();
+                msg.target_id = proto_msg.approve_join_group_req().target_user_id();
+                break;
+            case ChatMessage::kRemoveGroupMemberReq:
+                msg.payload = std::to_string(proto_msg.remove_group_member_req().group_id()) + "\n"
+                            + std::to_string(proto_msg.remove_group_member_req().target_user_id());
+                msg.group_id = proto_msg.remove_group_member_req().group_id();
+                msg.target_id = proto_msg.remove_group_member_req().target_user_id();
                 break;
             case ChatMessage::kPrivateChatReq:
                 msg.payload = proto_msg.private_chat_req().payload();
@@ -96,6 +126,13 @@ public:
                 break;
             case ChatMessage::kFileDownloadReq:
                 msg.payload = std::to_string(proto_msg.file_download_req().file_id());
+                break;
+            case ChatMessage::kFileUploadChunkReq:
+                msg.payload = proto_msg.file_upload_chunk_req().file_name();
+                msg.file_data = proto_msg.file_upload_chunk_req().file_data();
+                msg.file_size = proto_msg.file_upload_chunk_req().file_size();
+                msg.chunk_seq = proto_msg.file_upload_chunk_req().chunk_seq();
+                msg.total_chunks = proto_msg.file_upload_chunk_req().total_chunks();
                 break;
             default:
                 // 响应消息或未知消息：payload 保持为空
@@ -181,6 +218,14 @@ public:
                 }
                 break;
             }
+            case MessageType::DELETE_ACCOUNT_REQ: {
+                auto* body = proto_msg.mutable_delete_account_rsp();
+                body->set_success(result.success);
+                if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
             case MessageType::ADD_FRIEND_REQ: {
                 auto* body = proto_msg.mutable_add_friend_rsp();
                 body->set_success(result.success);
@@ -217,6 +262,14 @@ public:
             }
             case MessageType::BLOCK_FRIEND_REQ: {
                 auto* body = proto_msg.mutable_block_friend_rsp();
+                body->set_success(result.success);
+                if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::UNBLOCK_FRIEND_REQ: {
+                auto* body = proto_msg.mutable_unblock_friend_rsp();
                 body->set_success(result.success);
                 if (!result.success) {
                     body->set_error_message(result.error_message);
@@ -294,6 +347,40 @@ public:
                 }
                 break;
             }
+            case MessageType::ADD_GROUP_ADMIN_REQ: {
+                auto* body = proto_msg.mutable_add_group_admin_rsp();
+                body->set_success(result.success);
+                if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::REMOVE_GROUP_ADMIN_REQ: {
+                auto* body = proto_msg.mutable_remove_group_admin_rsp();
+                body->set_success(result.success);
+                if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::APPROVE_JOIN_GROUP_REQ: {
+                auto* body = proto_msg.mutable_approve_join_group_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_group_id(result.group_id);
+                } else {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::REMOVE_GROUP_MEMBER_REQ: {
+                auto* body = proto_msg.mutable_remove_group_member_rsp();
+                body->set_success(result.success);
+                if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
             case MessageType::PRIVATE_CHAT_REQ: {
                 auto* body = proto_msg.mutable_private_chat_rsp();
                 body->set_success(result.success);
@@ -350,6 +437,18 @@ public:
                         body->set_file_name(file.file_name);
                         body->set_file_size(file.file_size);
                     }
+                } else {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::FILE_UPLOAD_CHUNK_REQ: {
+                auto* body = proto_msg.mutable_file_upload_chunk_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_file_id(result.file_id);
+                    body->set_file_name(result.file_name);
+                    body->set_file_size(result.file_size);
                 } else {
                     body->set_error_message(result.error_message);
                 }

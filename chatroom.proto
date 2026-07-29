@@ -22,6 +22,8 @@ message ChatMessage {
         RegisterResponse      register_rsp        = 13;
         LogoutRequest         logout_req          = 14;
         LogoutResponse        logout_rsp          = 15;
+        DeleteAccountRequest  delete_account_req  = 16;
+        LogoutResponse        delete_account_rsp  = 17;
 
         // --- 好友模块 100-199 ---
         FriendOpRequest       add_friend_req      = 20;
@@ -32,6 +34,8 @@ message ChatMessage {
         FriendListResponse    query_friend_rsp    = 25;
         FriendOpRequest       block_friend_req    = 26;
         FriendOpResponse      block_friend_rsp    = 27;
+        FriendOpRequest       unblock_friend_req  = 28;
+        FriendOpResponse      unblock_friend_rsp  = 29;
 
         // --- 群组模块 200-299 ---
         CreateGroupRequest    create_group_req    = 30;
@@ -46,6 +50,14 @@ message ChatMessage {
         GroupListResponse     query_group_list_rsp = 39;
         GroupOpRequest        query_group_members_req = 40;
         GroupMembersResponse  query_group_members_rsp = 41;
+        GroupAdminRequest     add_group_admin_req     = 42;
+        GroupOpResponse       add_group_admin_rsp     = 43;
+        GroupAdminRequest     remove_group_admin_req  = 44;
+        GroupOpResponse       remove_group_admin_rsp  = 45;
+        GroupAdminRequest     approve_join_group_req  = 46;
+        GroupOpResponse       approve_join_group_rsp  = 47;
+        GroupAdminRequest     remove_group_member_req = 48;
+        GroupOpResponse       remove_group_member_rsp = 49;
 
         // --- 聊天模块 300-399 ---
         ChatContent           private_chat_req    = 50;
@@ -60,6 +72,8 @@ message ChatMessage {
         FileResponse          file_upload_rsp     = 61;
         FileRequest           file_download_req   = 62;
         FileResponse          file_download_rsp   = 63;
+        FileTransfer          file_upload_chunk_req = 64;
+        FileResponse          file_upload_chunk_rsp = 65;
     }
 }
 
@@ -102,6 +116,10 @@ message LogoutRequest {
 message LogoutResponse {
     bool   success        = 1;
     string error_message  = 2;
+}
+
+message DeleteAccountRequest {
+    string password = 1;
 }
 
 // ============================================================
@@ -150,6 +168,11 @@ message GroupOpResponse {
 
 message GroupOpRequest {
     uint64 group_id = 1;
+}
+
+message GroupAdminRequest {
+    uint64 group_id = 1;
+    uint64 target_user_id = 2;
 }
 
 message GroupListResponse {

@@ -20,6 +20,8 @@ enum class MessageType : uint32_t {
     VERIFY_CODE_RSP = 8,
     PASSWORD_RESET_REQ = 9,
     PASSWORD_RESET_RSP = 10,
+    DELETE_ACCOUNT_REQ = 11,
+    DELETE_ACCOUNT_RSP = 12,
     
     // ===== 好友模块 100-199 =====
     ADD_FRIEND_REQ = 100,
@@ -140,6 +142,8 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::REGISTER_RSP: return "REGISTER_RSP";
         case MessageType::LOGOUT_REQ: return "LOGOUT_REQ";
         case MessageType::LOGOUT_RSP: return "LOGOUT_RSP";
+        case MessageType::DELETE_ACCOUNT_REQ: return "DELETE_ACCOUNT_REQ";
+        case MessageType::DELETE_ACCOUNT_RSP: return "DELETE_ACCOUNT_RSP";
         case MessageType::ADD_FRIEND_REQ: return "ADD_FRIEND_REQ";
         case MessageType::ADD_FRIEND_RSP: return "ADD_FRIEND_RSP";
         case MessageType::DELETE_FRIEND_REQ: return "DELETE_FRIEND_REQ";
@@ -148,6 +152,8 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::QUERY_FRIEND_RSP: return "QUERY_FRIEND_RSP";
         case MessageType::BLOCK_FRIEND_REQ: return "BLOCK_FRIEND_REQ";
         case MessageType::BLOCK_FRIEND_RSP: return "BLOCK_FRIEND_RSP";
+        case MessageType::UNBLOCK_FRIEND_REQ: return "UNBLOCK_FRIEND_REQ";
+        case MessageType::UNBLOCK_FRIEND_RSP: return "UNBLOCK_FRIEND_RSP";
         case MessageType::CREATE_GROUP_REQ: return "CREATE_GROUP_REQ";
         case MessageType::CREATE_GROUP_RSP: return "CREATE_GROUP_RSP";
         case MessageType::DISMISS_GROUP_REQ: return "DISMISS_GROUP_REQ";
@@ -160,6 +166,14 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::QUERY_GROUP_LIST_RSP: return "QUERY_GROUP_LIST_RSP";
         case MessageType::QUERY_GROUP_MEMBERS_REQ: return "QUERY_GROUP_MEMBERS_REQ";
         case MessageType::QUERY_GROUP_MEMBERS_RSP: return "QUERY_GROUP_MEMBERS_RSP";
+        case MessageType::ADD_GROUP_ADMIN_REQ: return "ADD_GROUP_ADMIN_REQ";
+        case MessageType::ADD_GROUP_ADMIN_RSP: return "ADD_GROUP_ADMIN_RSP";
+        case MessageType::REMOVE_GROUP_ADMIN_REQ: return "REMOVE_GROUP_ADMIN_REQ";
+        case MessageType::REMOVE_GROUP_ADMIN_RSP: return "REMOVE_GROUP_ADMIN_RSP";
+        case MessageType::APPROVE_JOIN_GROUP_REQ: return "APPROVE_JOIN_GROUP_REQ";
+        case MessageType::APPROVE_JOIN_GROUP_RSP: return "APPROVE_JOIN_GROUP_RSP";
+        case MessageType::REMOVE_GROUP_MEMBER_REQ: return "REMOVE_GROUP_MEMBER_REQ";
+        case MessageType::REMOVE_GROUP_MEMBER_RSP: return "REMOVE_GROUP_MEMBER_RSP";
         case MessageType::PRIVATE_CHAT_REQ: return "PRIVATE_CHAT_REQ";
         case MessageType::PRIVATE_CHAT_RSP: return "PRIVATE_CHAT_RSP";
         case MessageType::GROUP_CHAT_REQ: return "GROUP_CHAT_REQ";
@@ -170,6 +184,8 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::FILE_UPLOAD_RSP: return "FILE_UPLOAD_RSP";
         case MessageType::FILE_DOWNLOAD_REQ: return "FILE_DOWNLOAD_REQ";
         case MessageType::FILE_DOWNLOAD_RSP: return "FILE_DOWNLOAD_RSP";
+        case MessageType::FILE_UPLOAD_CHUNK_REQ: return "FILE_UPLOAD_CHUNK_REQ";
+        case MessageType::FILE_UPLOAD_CHUNK_RSP: return "FILE_UPLOAD_CHUNK_RSP";
         default: return "UNKNOWN";
     }
 }

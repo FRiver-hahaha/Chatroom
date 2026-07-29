@@ -303,6 +303,7 @@ QueryResult StorageManager::get_user_by_username(const std::string& username) {
     result.user_id = std::stoull(row[0]);
     result.username = row[1] ? row[1] : "";
     result.nickname = row[4] ? row[4] : "";
+    result.user_status = row[5] ? std::stoi(row[5]) : 1;
     result.is_online = is_online(result.user_id);
     mysql_free_result(res);
     mysql_pool_->release(conn);
@@ -329,6 +330,7 @@ QueryResult StorageManager::get_user_by_id(uint64_t user_id) {
     result.user_id = std::stoull(row[0]);
     result.username = row[1] ? row[1] : "";
     result.nickname = row[2] ? row[2] : "";
+    result.user_status = row[3] ? std::stoi(row[3]) : 1;
     result.is_online = is_online(result.user_id);
     mysql_free_result(res);
     mysql_pool_->release(conn);
@@ -379,6 +381,29 @@ std::string StorageManager::create_session(uint64_t user_id, const std::string& 
 
 bool StorageManager::verify_token(const std::string& token) {
     return !redis_get("chatroom:token:" + token).empty();
+}
+
+bool StorageManager::delete_user(uint64_t user_id) {
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+
+    // 手动清理 messages 表（无外键约束）
+    std::string del_msg = "DELETE FROM messages WHERE sender_id=" + std::to_string(user_id);
+    mysql_query(conn, del_msg.c_str());
+
+    // DELETE FROM users -- CASCADE 自动清理 friendships, group_members, chat_groups, files
+    std::string q = "DELETE FROM users WHERE id=" + std::to_string(user_id);
+    bool ok = (mysql_query(conn, q.c_str()) == 0);
+    mysql_pool_->release(conn);
+
+    // 清理 Redis
+    redis_del("chatroom:session:" + std::to_string(user_id));
+    redis_srem("chatroom:online", std::to_string(user_id));
+    redis_del("chatroom:user:" + std::to_string(user_id) + ":friends");
+    redis_del("chatroom:user:" + std::to_string(user_id) + ":groups");
+    redis_del("chatroom:offline_msg:" + std::to_string(user_id));
+
+    return ok;
 }
 
 bool StorageManager::clear_session(uint64_t user_id) {
@@ -452,6 +477,23 @@ bool StorageManager::unblock_friend(uint64_t user_id, uint64_t friend_id) {
     bool ok = (mysql_query(conn, q.c_str()) == 0);
     mysql_pool_->release(conn);
     return ok;
+}
+
+bool StorageManager::is_blocked_by(uint64_t user_id, uint64_t friend_id) {
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string q = "SELECT COUNT(*) FROM friendships WHERE user_id="
+                   + std::to_string(user_id) + " AND friend_id=" + std::to_string(friend_id)
+                   + " AND is_blocked=TRUE";
+    bool result = false;
+    if (mysql_query(conn, q.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn);
+        MYSQL_ROW row = mysql_fetch_row(res);
+        result = (row && std::stoi(row[0]) > 0);
+        mysql_free_result(res);
+    }
+    mysql_pool_->release(conn);
+    return result;
 }
 
 std::vector<QueryResult::FriendInfo> StorageManager::get_friends(uint64_t user_id) {
@@ -547,6 +589,18 @@ bool StorageManager::quit_group(uint64_t group_id, uint64_t user_id) {
         std::string up = "UPDATE chat_groups SET member_count = GREATEST(member_count - 1, 0) WHERE id="
                         + std::to_string(group_id);
         mysql_query(conn, up.c_str());
+
+        // 检查群组是否为空，自动删除
+        std::string check = "SELECT member_count FROM chat_groups WHERE id=" + std::to_string(group_id);
+        if (mysql_query(conn, check.c_str()) == 0) {
+            MYSQL_RES* res = mysql_store_result(conn);
+            MYSQL_ROW row = mysql_fetch_row(res);
+            if (row && std::stoll(row[0]) <= 0) {
+                std::string del = "DELETE FROM chat_groups WHERE id=" + std::to_string(group_id);
+                mysql_query(conn, del.c_str());
+            }
+            mysql_free_result(res);
+        }
     }
     mysql_pool_->release(conn);
     redis_del("chatroom:group:" + std::to_string(group_id) + ":members");
