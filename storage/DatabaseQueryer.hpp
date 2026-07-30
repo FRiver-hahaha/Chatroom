@@ -191,6 +191,7 @@ private:
             case MessageType::ADD_GROUP_ADMIN_REQ:       return handle_add_group_admin_query(msg);
             case MessageType::REMOVE_GROUP_ADMIN_REQ:    return handle_remove_group_admin_query(msg);
             case MessageType::APPROVE_JOIN_GROUP_REQ:    return handle_approve_join_group_query(msg);
+            case MessageType::REJECT_JOIN_GROUP_REQ:    return handle_reject_join_group_query(msg);
             case MessageType::REMOVE_GROUP_MEMBER_REQ:   return handle_remove_group_member_query(msg);
             default: return fail("未知群组操作");
         }
@@ -198,8 +199,11 @@ private:
 
     QueryResult handle_create_group_query(const Message& msg) {
         QueryResult r;
-        auto [name, desc] = split_two(msg.payload);
-        uint64_t gid = storage_->create_group(name, desc, msg.sender_id);
+        // payload format: "is_public\nname\ndescription"
+        auto [pub_str, rest] = split_two(msg.payload);
+        auto [name, desc] = split_two(rest);
+        bool is_public = (pub_str != "0");
+        uint64_t gid = storage_->create_group(name, desc, msg.sender_id, is_public);
         r.success = (gid != 0);
         if (r.success) r.group_id = gid; else r.error_message = "创建群组失败";
         return r;
@@ -217,9 +221,24 @@ private:
         QueryResult r;
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
         if (storage_->is_group_member(gid, msg.sender_id)) return fail("已经是群组成员");
-        r.success = storage_->join_group(gid, msg.sender_id);
-        if (r.success) { r.group_id = gid; r.group_members = storage_->get_group_members(gid); }
-        else r.error_message = "加入群组失败";
+
+        if (storage_->is_group_public(gid)) {
+            // 公开群组：直接加入
+            r.success = storage_->join_group(gid, msg.sender_id);
+            if (r.success) { r.group_id = gid; r.group_members = storage_->get_group_members(gid); }
+            else r.error_message = "加入群组失败";
+        } else {
+            // 私密群组：发送加入请求
+            if (storage_->is_join_pending(gid, msg.sender_id))
+                return fail("已发送过加入请求，请等待管理员审核");
+            r.success = storage_->request_join_group(gid, msg.sender_id);
+            if (r.success) {
+                r.group_id = gid;
+                r.group_members = storage_->get_group_members(gid);
+            } else {
+                r.error_message = "发送加入请求失败";
+            }
+        }
         return r;
     }
 
@@ -264,6 +283,9 @@ private:
     }
     QueryResult handle_approve_join_group_query(const Message& msg) {
         return do_group_admin_op(msg, &StorageManager::approve_join, "批准加入失败");
+    }
+    QueryResult handle_reject_join_group_query(const Message& msg) {
+        return do_group_admin_op(msg, &StorageManager::reject_join, "拒绝加入请求失败");
     }
     QueryResult handle_remove_group_member_query(const Message& msg) {
         return do_group_admin_op(msg, &StorageManager::remove_member, "移除群组成员失败");

@@ -442,6 +442,7 @@ public:
                     group_cache_.push_back(g);
                     std::cout << "  [" << g.group_id() << "] " << g.group_name()
                               << " (" << g.member_count() << "人)"
+                              << (g.is_public() ? " [公开]" : " [私密]")
                               << (g.is_member() ? " [已加入]" : "") << std::endl;
                 }
                 if (r.groups_size() == 0) {
@@ -531,6 +532,23 @@ public:
         if (!send_message(msg)) return false;
         auto resp = wait_response(MessageType::APPROVE_JOIN_GROUP_RSP);
         return handle_group_op_resp(resp, "批准加入");
+    }
+
+    bool reject_join_group(uint64_t gid, uint64_t target_uid) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::REJECT_JOIN_GROUP_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_group_id(gid);
+        msg.set_target_id(target_uid);
+        msg.set_timestamp(time(nullptr));
+        auto* body = msg.mutable_reject_join_group_req();
+        body->set_group_id(gid);
+        body->set_target_user_id(target_uid);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::REJECT_JOIN_GROUP_RSP);
+        return handle_group_op_resp(resp, "拒绝加入");
     }
 
     bool remove_group_member(uint64_t gid, uint64_t target_uid) {
@@ -820,6 +838,7 @@ private:
         if (resp.has_remove_group_admin_rsp()) return check(resp.remove_group_admin_rsp());
         if (resp.has_approve_join_group_rsp()) return check(resp.approve_join_group_rsp());
         if (resp.has_remove_group_member_rsp()) return check(resp.remove_group_member_rsp());
+        if (resp.has_reject_join_group_rsp()) return check(resp.reject_join_group_rsp());
 
         std::cerr << "[错误] " << op_name << ": 未收到有效响应" << std::endl;
         return false;
@@ -976,9 +995,10 @@ void menu_group(ChatClient& client) {
         std::cout << "  7. 移除管理员" << std::endl;
         std::cout << "  8. 批准加入" << std::endl;
         std::cout << "  9. 移除成员" << std::endl;
+        std::cout << "  10. 拒绝加入" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(9);
+        int choice = read_choice(10);
         switch (choice) {
             case 0: return;
             case 1: client.query_group_list(); break;
@@ -1026,6 +1046,12 @@ void menu_group(ChatClient& client) {
                 uint64_t gid = read_uint64("  请输入 group_id: ");
                 uint64_t uid = read_uint64("  请输入目标 user_id: ");
                 client.remove_group_member(gid, uid);
+                break;
+            }
+            case 10: {
+                uint64_t gid = read_uint64("  请输入 group_id: ");
+                uint64_t uid = read_uint64("  请输入目标 user_id: ");
+                client.reject_join_group(gid, uid);
                 break;
             }
         }

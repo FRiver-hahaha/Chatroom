@@ -119,6 +119,7 @@ private:
             case MessageType::ADD_GROUP_ADMIN_REQ:       send_rsp(conn, msg, result); break;
             case MessageType::REMOVE_GROUP_ADMIN_REQ:    send_rsp(conn, msg, result); break;
             case MessageType::APPROVE_JOIN_GROUP_REQ:    handle_approve_join_group(conn, msg, result); break;
+            case MessageType::REJECT_JOIN_GROUP_REQ:    handle_reject_join_group(conn, msg, result); break;
             case MessageType::REMOVE_GROUP_MEMBER_REQ:   handle_remove_group_member(conn, msg, result); break;
             default: break;
         }
@@ -144,6 +145,12 @@ private:
         send_rsp(conn, msg, result);
         if (result.success && msg.target_id != 0)
             notify_target(msg.target_id, "[系统通知] 你已被管理员移出群组 " + std::to_string(msg.group_id));
+    }
+
+    void handle_reject_join_group(Connection* conn, const Message& msg, const QueryResult& result) {
+        send_rsp(conn, msg, result);
+        if (result.success && msg.target_id != 0)
+            notify_target(msg.target_id, "[系统通知] 你加入群组 " + std::to_string(msg.group_id) + " 的请求已被拒绝");
     }
 
     // ===== Chat =====

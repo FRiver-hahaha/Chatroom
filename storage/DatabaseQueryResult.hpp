@@ -45,6 +45,7 @@ struct QueryResult {
         uint64_t owner_id;
         uint64_t member_count;
         bool is_member = false;
+        bool is_public = true;
     };
     std::vector<GroupInfo> group_list;
     

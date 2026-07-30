@@ -64,7 +64,8 @@ public:
                 msg.payload = std::to_string(proto_msg.unblock_friend_req().target_user_id());
                 break;
             case ChatMessage::kCreateGroupReq:
-                msg.payload = proto_msg.create_group_req().group_name() + "\n"
+                msg.payload = std::string(proto_msg.create_group_req().is_public() ? "1" : "0") + "\n"
+                            + proto_msg.create_group_req().group_name() + "\n"
                             + proto_msg.create_group_req().description();
                 break;
             case ChatMessage::kDismissGroupReq:
@@ -105,6 +106,12 @@ public:
                             + std::to_string(proto_msg.remove_group_member_req().target_user_id());
                 msg.group_id = proto_msg.remove_group_member_req().group_id();
                 msg.target_id = proto_msg.remove_group_member_req().target_user_id();
+                break;
+            case ChatMessage::kRejectJoinGroupReq:
+                msg.payload = std::to_string(proto_msg.reject_join_group_req().group_id()) + "\n"
+                            + std::to_string(proto_msg.reject_join_group_req().target_user_id());
+                msg.group_id = proto_msg.reject_join_group_req().group_id();
+                msg.target_id = proto_msg.reject_join_group_req().target_user_id();
                 break;
             case ChatMessage::kPrivateChatReq:
                 msg.payload = proto_msg.private_chat_req().payload();
@@ -324,6 +331,7 @@ public:
                         info->set_owner_id(g.owner_id);
                         info->set_member_count(g.member_count);
                         info->set_is_member(g.is_member);
+                        info->set_is_public(g.is_public);
                     }
                 } else {
                     body->set_error_message(result.error_message);
@@ -375,6 +383,14 @@ public:
             }
             case MessageType::REMOVE_GROUP_MEMBER_REQ: {
                 auto* body = proto_msg.mutable_remove_group_member_rsp();
+                body->set_success(result.success);
+                if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::REJECT_JOIN_GROUP_REQ: {
+                auto* body = proto_msg.mutable_reject_join_group_rsp();
                 body->set_success(result.success);
                 if (!result.success) {
                     body->set_error_message(result.error_message);

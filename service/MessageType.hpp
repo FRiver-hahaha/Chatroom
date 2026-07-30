@@ -56,6 +56,8 @@ enum class MessageType : uint32_t {
     APPROVE_JOIN_GROUP_RSP = 217,
     REMOVE_GROUP_MEMBER_REQ = 218,
     REMOVE_GROUP_MEMBER_RSP = 219,
+    REJECT_JOIN_GROUP_REQ = 220,
+    REJECT_JOIN_GROUP_RSP = 221,
     
     // ===== 聊天模块 300-399 =====
     PRIVATE_CHAT_REQ = 300,
@@ -174,6 +176,8 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::APPROVE_JOIN_GROUP_RSP: return "APPROVE_JOIN_GROUP_RSP";
         case MessageType::REMOVE_GROUP_MEMBER_REQ: return "REMOVE_GROUP_MEMBER_REQ";
         case MessageType::REMOVE_GROUP_MEMBER_RSP: return "REMOVE_GROUP_MEMBER_RSP";
+        case MessageType::REJECT_JOIN_GROUP_REQ: return "REJECT_JOIN_GROUP_REQ";
+        case MessageType::REJECT_JOIN_GROUP_RSP: return "REJECT_JOIN_GROUP_RSP";
         case MessageType::PRIVATE_CHAT_REQ: return "PRIVATE_CHAT_REQ";
         case MessageType::PRIVATE_CHAT_RSP: return "PRIVATE_CHAT_RSP";
         case MessageType::GROUP_CHAT_REQ: return "GROUP_CHAT_REQ";

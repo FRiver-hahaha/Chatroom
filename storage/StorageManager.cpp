@@ -212,6 +212,18 @@ std::string StorageManager::redis_hget(const std::string& key, const std::string
     }
     std::string res(r->str, r->len); freeReplyObject(r); return res;
 }
+std::vector<std::string> StorageManager::redis_smembers(const std::string& key) {
+    std::vector<std::string> result;
+    std::lock_guard<std::mutex> lock(redis_mutex_);
+    if (!redis_ctx_) return result;
+    auto* r = reinterpret_cast<redisReply*>(redisCommand(redis_ctx_, "SMEMBERS %s", key.c_str()));
+    if (!r || r->type != REDIS_REPLY_ARRAY) { if (r) freeReplyObject(r); return result; }
+    for (size_t i = 0; i < r->elements; ++i)
+        result.emplace_back(r->element[i]->str, r->element[i]->len);
+    freeReplyObject(r);
+    return result;
+}
+
 bool StorageManager::redis_sismember(const std::string& key, const std::string& member) {
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!redis_ctx_) return false;
@@ -582,6 +594,43 @@ bool StorageManager::join_group(uint64_t group_id, uint64_t user_id) {
 bool StorageManager::quit_group(uint64_t group_id, uint64_t user_id) {
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
+
+    // 检查是否为群主，如果是则寻找继承者
+    std::string own_q = "SELECT owner_id FROM chat_groups WHERE id=" + std::to_string(group_id);
+    bool is_owner = false;
+    if (mysql_query(conn, own_q.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn);
+        MYSQL_ROW row = mysql_fetch_row(res);
+        is_owner = (row && std::stoull(row[0]) == user_id);
+        mysql_free_result(res);
+    }
+
+    // 如果是群主，在退出前转让群主身份
+    if (is_owner) {
+        // 优先寻找管理员继承，其次按加入时间最早的成员
+        std::string find_q =
+            "SELECT user_id FROM group_members "
+            "WHERE group_id=" + std::to_string(group_id) + " AND user_id!=" + std::to_string(user_id) +
+            " ORDER BY CASE WHEN role='admin' THEN 0 ELSE 1 END, joined_at ASC LIMIT 1";
+        uint64_t successor = 0;
+        if (mysql_query(conn, find_q.c_str()) == 0) {
+            MYSQL_RES* res = mysql_store_result(conn);
+            MYSQL_ROW row = mysql_fetch_row(res);
+            if (row) successor = std::stoull(row[0]);
+            mysql_free_result(res);
+        }
+        if (successor != 0) {
+            // 转让群主
+            std::string transf = "UPDATE chat_groups SET owner_id=" + std::to_string(successor)
+                               + " WHERE id=" + std::to_string(group_id);
+            mysql_query(conn, transf.c_str());
+            std::string up_role = "UPDATE group_members SET role='owner' WHERE group_id="
+                                + std::to_string(group_id) + " AND user_id=" + std::to_string(successor);
+            mysql_query(conn, up_role.c_str());
+        }
+    }
+
+    // 删除退出用户
     std::string q = "DELETE FROM group_members WHERE group_id=" + std::to_string(group_id)
                    + " AND user_id=" + std::to_string(user_id);
     bool ok = (mysql_query(conn, q.c_str()) == 0);
@@ -661,7 +710,61 @@ bool StorageManager::approve_join(uint64_t group_id, uint64_t admin_id, uint64_t
         mysql_free_result(res);
     }
     mysql_pool_->release(conn);
-    return can ? join_group(group_id, user_id) : false;
+    if (!can) return false;
+
+    // 检查是否在待审批列表中
+    if (!is_join_pending(group_id, user_id)) return false;
+
+    // 从待审批列表中移除
+    std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
+    redis_srem(key, std::to_string(user_id));
+
+    return join_group(group_id, user_id);
+}
+
+bool StorageManager::reject_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string ck = "SELECT role FROM group_members WHERE group_id=" + std::to_string(group_id)
+                    + " AND user_id=" + std::to_string(admin_id);
+    bool can = false;
+    if (mysql_query(conn, ck.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn);
+        MYSQL_ROW row = mysql_fetch_row(res);
+        if (row) { std::string r(row[0]); can = (r == "owner" || r == "admin"); }
+        mysql_free_result(res);
+    }
+    mysql_pool_->release(conn);
+    if (!can) return false;
+
+    // 从待审批列表中移除
+    std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
+    return redis_srem(key, std::to_string(user_id));
+}
+
+bool StorageManager::transfer_group_ownership(uint64_t group_id, uint64_t new_owner_id) {
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string up1 = "UPDATE chat_groups SET owner_id=" + std::to_string(new_owner_id)
+                    + " WHERE id=" + std::to_string(group_id);
+    std::string up2 = "UPDATE group_members SET role='owner' WHERE group_id="
+                    + std::to_string(group_id) + " AND user_id=" + std::to_string(new_owner_id);
+    bool ok = (mysql_query(conn, up1.c_str()) == 0 && mysql_query(conn, up2.c_str()) == 0);
+    mysql_pool_->release(conn);
+    redis_del("chatroom:group:" + std::to_string(group_id) + ":members");
+    return ok;
+}
+
+std::vector<uint64_t> StorageManager::get_pending_join_requests(uint64_t group_id) {
+    std::vector<uint64_t> result;
+    std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
+    auto members = redis_smembers(key);
+    for (const auto& m : members) {
+        try {
+            result.push_back(std::stoull(m));
+        } catch (...) {}
+    }
+    return result;
 }
 
 bool StorageManager::remove_member(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {
@@ -696,11 +799,37 @@ bool StorageManager::is_group_member(uint64_t group_id, uint64_t user_id) {
     return result;
 }
 
+bool StorageManager::is_group_public(uint64_t group_id) {
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return true; // default to public on error
+    std::string q = "SELECT is_public FROM chat_groups WHERE id=" + std::to_string(group_id);
+    bool result = true;
+    if (mysql_query(conn, q.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn);
+        MYSQL_ROW row = mysql_fetch_row(res);
+        result = (row && std::stoi(row[0]) != 0);
+        mysql_free_result(res);
+    }
+    mysql_pool_->release(conn);
+    return result;
+}
+
+bool StorageManager::request_join_group(uint64_t group_id, uint64_t user_id) {
+    if (is_group_member(group_id, user_id)) return false;
+    std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
+    return redis_sadd(key, std::to_string(user_id));
+}
+
+bool StorageManager::is_join_pending(uint64_t group_id, uint64_t user_id) {
+    std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
+    return redis_sismember(key, std::to_string(user_id));
+}
+
 QueryResult::GroupInfo StorageManager::get_group_info(uint64_t group_id) {
     QueryResult::GroupInfo info{};
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return info;
-    std::string q = "SELECT id, group_name, description, owner_id, member_count "
+    std::string q = "SELECT id, group_name, description, owner_id, member_count, is_public "
                     "FROM chat_groups WHERE id=" + std::to_string(group_id);
     if (mysql_query(conn, q.c_str()) == 0) {
         MYSQL_RES* res = mysql_store_result(conn);
@@ -711,6 +840,7 @@ QueryResult::GroupInfo StorageManager::get_group_info(uint64_t group_id) {
             info.description = row[2] ? row[2] : "";
             info.owner_id    = std::stoull(row[3]);
             info.member_count = std::stoull(row[4]);
+            info.is_public   = row[5] ? (std::stoi(row[5]) != 0) : true;
         }
         mysql_free_result(res);
     }
@@ -722,7 +852,7 @@ std::vector<QueryResult::GroupInfo> StorageManager::get_user_groups(uint64_t use
     std::vector<QueryResult::GroupInfo> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
-    std::string q = "SELECT g.id, g.group_name, g.description, g.owner_id, g.member_count "
+    std::string q = "SELECT g.id, g.group_name, g.description, g.owner_id, g.member_count, g.is_public "
                     "FROM chat_groups g JOIN group_members gm ON g.id = gm.group_id "
                     "WHERE gm.user_id=" + std::to_string(user_id);
     if (mysql_query(conn, q.c_str()) != 0) { mysql_pool_->release(conn); return result; }
@@ -737,6 +867,7 @@ std::vector<QueryResult::GroupInfo> StorageManager::get_user_groups(uint64_t use
         info.owner_id    = std::stoull(row[3]);
         info.member_count = std::stoull(row[4]);
         info.is_member   = true;
+        info.is_public   = row[5] ? (std::stoi(row[5]) != 0) : true;
         result.push_back(info);
     }
     mysql_free_result(res);
@@ -766,6 +897,22 @@ std::vector<QueryResult::GroupMember> StorageManager::get_group_members(uint64_t
     }
     mysql_free_result(res);
     mysql_pool_->release(conn);
+
+    // 追加待审批的加入请求用户（role = "pending"）
+    auto pending_ids = get_pending_join_requests(group_id);
+    for (uint64_t pid : pending_ids) {
+        auto pinfo = get_user_by_id(pid);
+        if (pinfo.success) {
+            QueryResult::GroupMember member;
+            member.user_id   = pid;
+            member.username  = pinfo.username;
+            member.nickname  = pinfo.nickname;
+            member.role      = "pending";
+            member.join_time = 0;
+            result.push_back(member);
+        }
+    }
+
     return result;
 }
 

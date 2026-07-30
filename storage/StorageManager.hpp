@@ -96,8 +96,14 @@ public:
     bool add_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id);
     bool remove_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id);
     bool approve_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id);
+    bool reject_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id);
     bool remove_member(uint64_t group_id, uint64_t admin_id, uint64_t user_id);
     bool is_group_member(uint64_t group_id, uint64_t user_id);
+    bool is_group_public(uint64_t group_id);
+    bool request_join_group(uint64_t group_id, uint64_t user_id);
+    bool transfer_group_ownership(uint64_t group_id, uint64_t new_owner_id);
+    bool is_join_pending(uint64_t group_id, uint64_t user_id);
+    std::vector<uint64_t> get_pending_join_requests(uint64_t group_id);
     QueryResult::GroupInfo get_group_info(uint64_t group_id);
     std::vector<QueryResult::GroupInfo> get_user_groups(uint64_t user_id);
     std::vector<QueryResult::GroupMember> get_group_members(uint64_t group_id);
@@ -155,6 +161,7 @@ private:
     bool redis_sadd(const std::string& key, const std::string& member);
     bool redis_srem(const std::string& key, const std::string& member);
     bool redis_sismember(const std::string& key, const std::string& member);
+    std::vector<std::string> redis_smembers(const std::string& key);
     bool redis_lpush(const std::string& key, const std::string& value);
     bool redis_expire(const std::string& key, int seconds);
     std::vector<std::string> redis_lrange(const std::string& key, int start, int stop);

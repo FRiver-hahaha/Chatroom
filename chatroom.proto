@@ -58,6 +58,8 @@ message ChatMessage {
         GroupOpResponse       approve_join_group_rsp  = 47;
         GroupAdminRequest     remove_group_member_req = 48;
         GroupOpResponse       remove_group_member_rsp = 49;
+        GroupAdminRequest     reject_join_group_req  = 56;
+        GroupOpResponse       reject_join_group_rsp  = 57;
 
         // --- 聊天模块 300-399 ---
         ChatContent           private_chat_req    = 50;
@@ -188,6 +190,7 @@ message GroupInfo {
     uint64 owner_id     = 4;
     uint64 member_count = 5;
     bool   is_member    = 6;
+    bool   is_public    = 7;
 }
 
 message GroupMembersResponse {
