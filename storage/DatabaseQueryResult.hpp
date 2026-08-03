@@ -22,6 +22,10 @@ struct QueryResult {
     uint64_t file_id = 0;
     std::string file_name;
     uint64_t file_size = 0;
+    std::string file_data;  // 文件下载时的实际内容
+    uint32_t chunk_seq = 0;
+    uint32_t total_chunks = 0;
+    std::vector<uint32_t> received_chunks;  // 断点续传已收分片
     
     // ===== 群组相关 =====
     uint64_t group_id = 0;

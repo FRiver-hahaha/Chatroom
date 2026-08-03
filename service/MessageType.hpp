@@ -34,6 +34,8 @@ enum class MessageType : uint32_t {
     BLOCK_FRIEND_RSP = 107,
     UNBLOCK_FRIEND_REQ = 108,
     UNBLOCK_FRIEND_RSP = 109,
+    QUERY_BLOCKED_REQ = 110,
+    QUERY_BLOCKED_RSP = 111,
     
     // ===== 群组模块 200-299 =====
     CREATE_GROUP_REQ = 200,
@@ -78,6 +80,12 @@ enum class MessageType : uint32_t {
     FILE_UPLOAD_CHUNK_REQ = 404,
     FILE_UPLOAD_CHUNK_RSP = 405,
     OFFLINE_FILE_NOTIFY = 406,
+    FILE_UPLOAD_STATUS_REQ = 407,
+    FILE_UPLOAD_STATUS_RSP = 408,
+    FILE_DOWNLOAD_CHUNK_REQ = 409,
+    FILE_DOWNLOAD_CHUNK_RSP = 410,
+    FILE_LIST_INCOMPLETE_REQ = 411,
+    FILE_LIST_INCOMPLETE_RSP = 412,
     
     // ===== 动态模块 500-599 =====
     MOMENT_PUBLISH_REQ = 500,
@@ -156,6 +164,8 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::BLOCK_FRIEND_RSP: return "BLOCK_FRIEND_RSP";
         case MessageType::UNBLOCK_FRIEND_REQ: return "UNBLOCK_FRIEND_REQ";
         case MessageType::UNBLOCK_FRIEND_RSP: return "UNBLOCK_FRIEND_RSP";
+        case MessageType::QUERY_BLOCKED_REQ: return "QUERY_BLOCKED_REQ";
+        case MessageType::QUERY_BLOCKED_RSP: return "QUERY_BLOCKED_RSP";
         case MessageType::CREATE_GROUP_REQ: return "CREATE_GROUP_REQ";
         case MessageType::CREATE_GROUP_RSP: return "CREATE_GROUP_RSP";
         case MessageType::DISMISS_GROUP_REQ: return "DISMISS_GROUP_REQ";
@@ -190,6 +200,10 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::FILE_DOWNLOAD_RSP: return "FILE_DOWNLOAD_RSP";
         case MessageType::FILE_UPLOAD_CHUNK_REQ: return "FILE_UPLOAD_CHUNK_REQ";
         case MessageType::FILE_UPLOAD_CHUNK_RSP: return "FILE_UPLOAD_CHUNK_RSP";
+        case MessageType::FILE_UPLOAD_STATUS_REQ: return "FILE_UPLOAD_STATUS_REQ";
+        case MessageType::FILE_UPLOAD_STATUS_RSP: return "FILE_UPLOAD_STATUS_RSP";
+        case MessageType::FILE_DOWNLOAD_CHUNK_REQ: return "FILE_DOWNLOAD_CHUNK_REQ";
+        case MessageType::FILE_DOWNLOAD_CHUNK_RSP: return "FILE_DOWNLOAD_CHUNK_RSP";
         default: return "UNKNOWN";
     }
 }

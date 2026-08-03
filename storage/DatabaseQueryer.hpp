@@ -11,6 +11,9 @@
 
 namespace chatroom {
 
+// 分片大小：64KB
+static constexpr size_t FILE_CHUNK_SIZE = 64 * 1024;
+
 class DatabaseQueryer {
 public:
     explicit DatabaseQueryer(std::shared_ptr<StorageManager> storage)
@@ -159,9 +162,18 @@ private:
         switch (msg.type) {
             case MessageType::ADD_FRIEND_REQ:     return handle_add_friend_query(msg);
             case MessageType::DELETE_FRIEND_REQ:  return do_friend_op(msg, &StorageManager::remove_friend, "删除好友失败");
-            case MessageType::QUERY_FRIEND_REQ: { r.success = true; r.friend_list = storage_->get_friends(msg.sender_id); return r; }
-            case MessageType::BLOCK_FRIEND_REQ:   return do_friend_op(msg, &StorageManager::block_friend, "屏蔽失败");
-            case MessageType::UNBLOCK_FRIEND_REQ: return do_friend_op(msg, &StorageManager::unblock_friend, "解除屏蔽失败");
+            case MessageType::QUERY_FRIEND_REQ:   { r.success = true; r.friend_list = storage_->get_friends(msg.sender_id); return r; }
+            case MessageType::QUERY_BLOCKED_REQ: { r.success = true; r.friend_list = storage_->get_blocked_users(msg.sender_id); return r; }
+            case MessageType::BLOCK_FRIEND_REQ: {
+                uint64_t tid = extract_target(msg);
+                if (!storage_->is_friend(msg.sender_id, tid)) return fail("不是好友，无法拉黑");
+                return do_friend_op(msg, &StorageManager::block_friend, "屏蔽失败");
+            }
+            case MessageType::UNBLOCK_FRIEND_REQ: {
+                uint64_t tid = extract_target(msg);
+                if (!storage_->is_friend(msg.sender_id, tid)) return fail("不是好友，无法解除拉黑");
+                return do_friend_op(msg, &StorageManager::unblock_friend, "解除屏蔽失败");
+            }
             default: return fail("未知好友操作");
         }
     }
@@ -335,6 +347,8 @@ private:
         int limit = limit_str.empty() ? 50 : std::stoi(limit_str);
 
         if (gid == 0 && tid == 0) return fail("缺少查询参数");
+        if (gid != 0 && !storage_->is_group_member(gid, msg.sender_id))
+            return fail("你不是该群组成员，无法查看聊天记录");
         QueryResult r; r.success = true;
         r.history = (gid != 0) ? storage_->get_group_history(gid, limit)
                               : storage_->get_history(msg.sender_id, tid, limit);
@@ -350,6 +364,8 @@ private:
             case MessageType::FILE_UPLOAD_REQ:        return handle_file_upload_query(msg);
             case MessageType::FILE_DOWNLOAD_REQ:      return handle_file_download_query(msg);
             case MessageType::FILE_UPLOAD_CHUNK_REQ:  return handle_file_chunk_upload_query(msg);
+            case MessageType::FILE_UPLOAD_STATUS_REQ: return handle_file_upload_status_query(msg);
+            case MessageType::FILE_DOWNLOAD_CHUNK_REQ: return handle_file_download_chunk_query(msg);
             default: return fail("未知文件操作");
         }
     }
@@ -373,18 +389,24 @@ private:
     }
 
     QueryResult handle_file_chunk_upload_query(const Message& msg) {
-        // chunk upload: append to file, when last chunk arrives return final metadata
         QueryResult r;
         mkdir("/tmp/chatroom_files/", 0755);
         std::string path = "/tmp/chatroom_files/" + msg.payload;
+
+        // 写入分片数据
         FILE* fp = fopen(path.c_str(), msg.chunk_seq == 0 ? "wb" : "ab");
         if (!fp) return fail("无法写入文件");
         fwrite(msg.file_data.data(), 1, msg.file_data.size(), fp);
         fclose(fp);
 
+        // 记录分片到 Redis
+        storage_->record_file_chunk(msg.sender_id, msg.payload, msg.file_size, msg.chunk_seq);
+
         if (msg.chunk_seq == msg.total_chunks - 1 || msg.total_chunks <= 1) {
+            // 最后一个分片：保存元数据，清理 Redis 状态
             uint64_t fid = storage_->save_file_metadata(msg.payload, msg.file_size, path,
                                                          msg.sender_id, msg.target_id);
+            storage_->clear_file_chunks(msg.sender_id, msg.payload, msg.file_size);
             r.success = (fid != 0);
             if (r.success) { r.file_id = fid; r.file_name = msg.payload; r.file_size = msg.file_size; }
             else r.error_message = "文件保存失败";
@@ -399,8 +421,91 @@ private:
         uint64_t fid = msg.target_id; if (fid == 0) fid = std::stoull(msg.payload);
         auto info = storage_->get_file_info(fid);
         r.success = (info.file_id != 0);
-        if (r.success) { r.offline_files.push_back(info); }
-        else r.error_message = "文件不存在";
+        if (r.success) {
+            r.file_id   = info.file_id;
+            r.file_name = info.file_name;
+            r.file_size = info.file_size;
+            // 小文件直接返回内容，大文件仅返回元数据（客户端走分片下载）
+            if (info.file_size <= FILE_CHUNK_SIZE) {
+                FILE* fp = fopen(info.file_path.c_str(), "rb");
+                if (fp) {
+                    fseek(fp, 0, SEEK_END);
+                    long sz = ftell(fp);
+                    fseek(fp, 0, SEEK_SET);
+                    r.file_data.resize(sz);
+                    fread(&r.file_data[0], 1, sz, fp);
+                    fclose(fp);
+                }
+            }
+        } else {
+            r.error_message = "文件不存在";
+        }
+        return r;
+    }
+
+    QueryResult handle_file_upload_status_query(const Message& msg) {
+        QueryResult r;
+        // payload 格式: "file_name\nfile_size"
+        auto [file_name, size_str] = split_two(msg.payload);
+        uint64_t file_size = std::stoull(size_str);
+
+        uint32_t total_chunks = static_cast<uint32_t>(
+            (file_size + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
+        if (total_chunks == 0) total_chunks = 1;
+
+        auto received = storage_->get_received_chunks(msg.sender_id, file_name, file_size);
+
+        r.success = true;
+        r.total_chunks = total_chunks;
+        r.received_chunks = received;
+
+        // 如果分片全部收齐，file_id 已存在则一并返回
+        if (received.size() >= total_chunks) {
+            // 检查文件是否已完成（MySQL 中有记录）
+            std::string path = "/tmp/chatroom_files/" + file_name;
+            FILE* fp = fopen(path.c_str(), "rb");
+            if (fp) {
+                fseek(fp, 0, SEEK_END);
+                uint64_t actual_size = ftell(fp);
+                fclose(fp);
+                if (actual_size >= file_size) {
+                    // 文件已完成，尝试获取已有的 file_id
+                    // 通过扫描 MySQL 或直接返回 complete 状态
+                    r.file_id = 0;  // 已完成但需重新确认
+                }
+            }
+        }
+
+        return r;
+    }
+
+    QueryResult handle_file_download_chunk_query(const Message& msg) {
+        QueryResult r;
+        uint64_t fid = msg.target_id; if (fid == 0) fid = std::stoull(msg.payload);
+        auto info = storage_->get_file_info(fid);
+        if (info.file_id == 0) return fail("文件不存在");
+
+        uint32_t total_chunks = static_cast<uint32_t>(
+            (info.file_size + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
+        if (total_chunks == 0) total_chunks = 1;
+
+        uint64_t offset = static_cast<uint64_t>(msg.chunk_seq) * FILE_CHUNK_SIZE;
+        uint64_t chunk_size = std::min(static_cast<uint64_t>(FILE_CHUNK_SIZE),
+                                        info.file_size - offset);
+
+        FILE* fp = fopen(info.file_path.c_str(), "rb");
+        if (!fp) return fail("无法打开文件");
+        fseek(fp, offset, SEEK_SET);
+        r.file_data.resize(chunk_size);
+        fread(&r.file_data[0], 1, chunk_size, fp);
+        fclose(fp);
+
+        r.success = true;
+        r.file_id = fid;
+        r.file_name = info.file_name;
+        r.file_size = info.file_size;
+        r.chunk_seq = msg.chunk_seq;
+        r.total_chunks = total_chunks;
         return r;
     }
 

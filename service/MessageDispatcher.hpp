@@ -97,6 +97,7 @@ private:
             case MessageType::QUERY_FRIEND_REQ:   send_rsp(conn, msg, result); break;
             case MessageType::BLOCK_FRIEND_REQ:   send_rsp(conn, msg, result); break;
             case MessageType::UNBLOCK_FRIEND_REQ: send_rsp(conn, msg, result); break;
+            case MessageType::QUERY_BLOCKED_REQ: send_rsp(conn, msg, result); break;
             default: break;
         }
     }
@@ -204,6 +205,8 @@ private:
             case MessageType::FILE_UPLOAD_REQ:        send_rsp(conn, msg, result); break;
             case MessageType::FILE_DOWNLOAD_REQ:      send_rsp(conn, msg, result); break;
             case MessageType::FILE_UPLOAD_CHUNK_REQ:  send_rsp(conn, msg, result); break;
+            case MessageType::FILE_UPLOAD_STATUS_REQ: send_rsp(conn, msg, result); break;
+            case MessageType::FILE_DOWNLOAD_CHUNK_REQ: send_rsp(conn, msg, result); break;
             default: break;
         }
     }

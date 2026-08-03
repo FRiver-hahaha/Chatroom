@@ -69,6 +69,10 @@ message ChatMessage {
         HistoryRequest        get_history_req     = 54;
         HistoryResponse       get_history_rsp     = 55;
 
+        // --- 好友模块扩展 ---
+        FriendOpRequest       query_blocked_req   = 70;
+        FriendListResponse    query_blocked_rsp   = 71;
+
         // --- 文件模块 400-499 ---
         FileTransfer          file_upload_req     = 60;
         FileResponse          file_upload_rsp     = 61;
@@ -76,6 +80,12 @@ message ChatMessage {
         FileResponse          file_download_rsp   = 63;
         FileTransfer          file_upload_chunk_req = 64;
         FileResponse          file_upload_chunk_rsp = 65;
+        FileStatusRequest     file_upload_status_req = 66;
+        FileStatusResponse    file_upload_status_rsp = 67;
+        FileDownloadChunkRequest  file_download_chunk_req = 68;
+        FileTransfer          file_download_chunk_rsp = 69;
+        FileListIncompleteRequest  file_list_incomplete_req = 70;
+        FileListIncompleteResponse file_list_incomplete_rsp = 71;
     }
 }
 
@@ -263,4 +273,44 @@ message FileResponse {
     uint64 file_id        = 3;
     string file_name      = 4;
     uint64 file_size      = 5;
+    bytes  file_data      = 6;  // 下载时的文件内容
+}
+
+// 查询上传进度（断点续传入口）
+message FileStatusRequest {
+    string file_name = 1;
+    uint64 file_size = 2;
+}
+
+// 返回上传进度
+message FileStatusResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    uint64 file_id        = 3;  // 已完成的文件 ID；0 表示尚未完成
+    uint32 total_chunks   = 4;
+    repeated uint32 received_chunks = 5;  // 已收到的分片序号
+}
+
+// 请求下载指定分片
+message FileDownloadChunkRequest {
+    uint64 file_id   = 1;
+    uint32 chunk_seq = 2;
+}
+
+// 查询未完成的上传（断点续传列表）
+message FileListIncompleteRequest {
+    // 空请求，使用 envelope 中的 sender_id
+}
+
+message FileListIncompleteResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    repeated IncompleteFileInfo files = 3;
+}
+
+message IncompleteFileInfo {
+    string file_name   = 1;
+    uint64 file_size   = 2;
+    uint32 total_chunks = 3;
+    uint32 received_count = 4;  // 已收到的分片数
 }

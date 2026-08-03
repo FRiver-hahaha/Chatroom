@@ -23,7 +23,6 @@ public:
             return false;
         }
 
-        // ===== 填充 Message 结构体 =====
         msg.type      = static_cast<MessageType>(proto_msg.type());
         msg.sender_id = proto_msg.sender_id();
         msg.target_id = proto_msg.target_id();
@@ -31,7 +30,6 @@ public:
         msg.timestamp = proto_msg.timestamp();
         msg.token     = proto_msg.token();
 
-        // ===== 根据 oneof body 类型提取 payload =====
         switch (proto_msg.body_case()) {
             case ChatMessage::kLoginReq:
                 msg.payload = proto_msg.login_req().username() + "\n"
@@ -62,6 +60,9 @@ public:
                 break;
             case ChatMessage::kUnblockFriendReq:
                 msg.payload = std::to_string(proto_msg.unblock_friend_req().target_user_id());
+                break;
+            case ChatMessage::kQueryBlockedReq:
+                msg.payload = "";
                 break;
             case ChatMessage::kCreateGroupReq:
                 msg.payload = std::string(proto_msg.create_group_req().is_public() ? "1" : "0") + "\n"
@@ -141,20 +142,30 @@ public:
                 msg.chunk_seq = proto_msg.file_upload_chunk_req().chunk_seq();
                 msg.total_chunks = proto_msg.file_upload_chunk_req().total_chunks();
                 break;
+            case ChatMessage::kFileUploadStatusReq:
+                msg.payload = proto_msg.file_upload_status_req().file_name() + "\n"
+                            + std::to_string(proto_msg.file_upload_status_req().file_size());
+                break;
+            case ChatMessage::kFileDownloadChunkReq:
+                msg.payload = std::to_string(proto_msg.file_download_chunk_req().file_id());
+                msg.chunk_seq = proto_msg.file_download_chunk_req().chunk_seq();
+                break;
+            case ChatMessage::kFileDownloadChunkRsp:
+                msg.payload = proto_msg.file_download_chunk_rsp().file_name();
+                msg.file_data = proto_msg.file_download_chunk_rsp().file_data();
+                msg.file_size = proto_msg.file_download_chunk_rsp().file_size();
+                msg.chunk_seq = proto_msg.file_download_chunk_rsp().chunk_seq();
+                msg.total_chunks = proto_msg.file_download_chunk_rsp().total_chunks();
+                break;
             default:
-                // 响应消息或未知消息：payload 保持为空
                 break;
         }
 
-        // ===== 自动设置属性标志 =====
         msg.flags = get_flags_by_type(msg.type);
 
         return true;
     }
 
-    /**
-     * @brief 序列化 Message 结构体为 Protobuf 字节流
-     */
     static std::string serialize(const Message& msg) {
         ChatMessage proto_msg;
 
@@ -173,13 +184,9 @@ public:
         return result;
     }
 
-    /**
-     * @brief 根据 QueryResult 序列化完整的响应消息
-     */
     static std::string serialize_response(const Message& request_msg, const QueryResult& result) {
         ChatMessage proto_msg;
 
-        // 响应类型 = 请求类型 + 1
         uint32_t response_type = static_cast<uint32_t>(request_msg.type) + 1;
         proto_msg.set_type(response_type);
         proto_msg.set_sender_id(request_msg.sender_id);
@@ -279,6 +286,24 @@ public:
                 auto* body = proto_msg.mutable_unblock_friend_rsp();
                 body->set_success(result.success);
                 if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::QUERY_BLOCKED_REQ: {
+                auto* body = proto_msg.mutable_query_blocked_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    for (const auto& f : result.friend_list) {
+                        auto* info = body->add_friends();
+                        info->set_user_id(f.user_id);
+                        info->set_username(f.username);
+                        info->set_nickname(f.nickname);
+                        info->set_is_online(f.is_online);
+                        info->set_is_blocked(f.is_blocked);
+                        info->set_add_time(f.add_time);
+                    }
+                } else {
                     body->set_error_message(result.error_message);
                 }
                 break;
@@ -447,12 +472,10 @@ public:
                 auto* body = proto_msg.mutable_file_download_rsp();
                 body->set_success(result.success);
                 if (result.success) {
-                    if (!result.offline_files.empty()) {
-                        const auto& file = result.offline_files[0];
-                        body->set_file_id(file.file_id);
-                        body->set_file_name(file.file_name);
-                        body->set_file_size(file.file_size);
-                    }
+                    body->set_file_id(result.file_id);
+                    body->set_file_name(result.file_name);
+                    body->set_file_size(result.file_size);
+                    body->set_file_data(result.file_data);
                 } else {
                     body->set_error_message(result.error_message);
                 }
@@ -470,6 +493,29 @@ public:
                 }
                 break;
             }
+            case MessageType::FILE_UPLOAD_STATUS_REQ: {
+                auto* body = proto_msg.mutable_file_upload_status_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_file_id(result.file_id);
+                    body->set_total_chunks(result.total_chunks);
+                    for (auto seq : result.received_chunks) {
+                        body->add_received_chunks(seq);
+                    }
+                } else {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::FILE_DOWNLOAD_CHUNK_REQ: {
+                auto* body = proto_msg.mutable_file_download_chunk_rsp();
+                body->set_file_name(result.file_name);
+                body->set_file_size(result.file_size);
+                body->set_file_data(result.file_data);
+                body->set_chunk_seq(result.chunk_seq);
+                body->set_total_chunks(result.total_chunks);
+                break;
+            }
             default:
                 break;
         }
@@ -482,9 +528,6 @@ public:
         return serialized;
     }
 
-    /**
-     * @brief 构造实时通知消息
-     */
     static std::string build_notification(uint64_t from_user_id,
                                            const std::string& from_username,
                                            const std::string& notification_type,
@@ -498,7 +541,6 @@ public:
             now.time_since_epoch()).count();
         proto_msg.set_timestamp(timestamp);
 
-        // 使用 private_chat_req 的 payload 来传递通知内容
         auto* chat_content = proto_msg.mutable_private_chat_rsp();
         chat_content->set_success(true);
 

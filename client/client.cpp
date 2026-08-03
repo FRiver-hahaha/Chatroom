@@ -25,6 +25,7 @@
 #include <sstream>
 #include <iomanip>
 #include <limits>
+#include <set>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -328,6 +329,43 @@ public:
         if (!send_message(msg)) return false;
         auto resp = wait_response(MessageType::UNBLOCK_FRIEND_RSP);
         return handle_friend_op_resp(resp, "解除拉黑");
+    }
+
+    void query_blocked() {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::QUERY_BLOCKED_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_timestamp(time(nullptr));
+        msg.mutable_query_blocked_req();
+
+        if (!send_message(msg)) return;
+        auto resp = wait_response(MessageType::QUERY_BLOCKED_RSP);
+        if (resp.type() == static_cast<uint32_t>(MessageType::QUERY_BLOCKED_RSP) && resp.has_query_blocked_rsp()) {
+            auto& r = resp.query_blocked_rsp();
+            if (r.success()) {
+                std::cout << "\n===== 已拉黑用户列表 =====" << std::endl;
+                std::cout << std::left << std::setw(10) << "UID"
+                          << std::setw(18) << "用户名"
+                          << std::setw(18) << "昵称"
+                          << std::setw(8) << "在线" << std::endl;
+                std::cout << std::string(54, '-') << std::endl;
+                int count = 0;
+                for (int i = 0; i < r.friends_size(); ++i) {
+                    auto& f = r.friends(i);
+                    std::cout << std::left << std::setw(10) << f.user_id()
+                              << std::setw(18) << f.username()
+                              << std::setw(18) << f.nickname()
+                              << std::setw(8) << (f.is_online() ? "是" : "否") << std::endl;
+                    count++;
+                }
+                if (count == 0) {
+                    std::cout << "  (无已拉黑用户)" << std::endl;
+                }
+            } else {
+                std::cerr << "[失败] " << r.error_message() << std::endl;
+            }
+        }
     }
 
     void query_friends() {
@@ -641,8 +679,9 @@ public:
 
     // --- 文件 ---
 
+    static constexpr size_t FILE_CHUNK_SIZE = 64 * 1024;  // 64KB
+
     bool upload_file(const std::string& filepath) {
-        // 读取文件内容
         FILE* fp = fopen(filepath.c_str(), "rb");
         if (!fp) {
             std::cerr << "[错误] 无法打开文件: " << filepath << std::endl;
@@ -652,43 +691,149 @@ public:
         uint64_t fsize = ftell(fp);
         fseek(fp, 0, SEEK_SET);
 
-        std::string filedata(fsize, '\0');
-        fread(&filedata[0], 1, fsize, fp);
-        fclose(fp);
-
         // 提取文件名
         std::string filename = filepath;
         auto pos = filepath.find_last_of('/');
         if (pos != std::string::npos) filename = filepath.substr(pos + 1);
 
-        chatroom::ChatMessage msg;
-        msg.set_type(static_cast<uint32_t>(MessageType::FILE_UPLOAD_REQ));
-        msg.set_token(token_);
-        msg.set_sender_id(user_id_);
-        msg.set_timestamp(time(nullptr));
-        auto* body = msg.mutable_file_upload_req();
-        body->set_file_name(filename);
-        body->set_file_size(fsize);
-        body->set_file_data(filedata);
-        body->set_chunk_seq(0);
-        body->set_total_chunks(1);
-
         std::cout << "[信息] 上传文件: " << filename << " (" << fsize << " bytes)" << std::endl;
 
-        if (!send_message(msg)) return false;
-        auto resp = wait_response(MessageType::FILE_UPLOAD_RSP, 30);
-        if (resp.type() == static_cast<uint32_t>(MessageType::FILE_UPLOAD_RSP) && resp.has_file_upload_rsp()) {
-            auto& r = resp.file_upload_rsp();
-            if (r.success()) {
-                std::cout << "[成功] 文件上传成功! file_id=" << r.file_id() << std::endl;
-                return true;
+        // === 小文件：整文件上传 ===
+        if (fsize <= FILE_CHUNK_SIZE) {
+            std::string filedata(fsize, '\0');
+            fread(&filedata[0], 1, fsize, fp);
+            fclose(fp);
+
+            chatroom::ChatMessage msg;
+            msg.set_type(static_cast<uint32_t>(MessageType::FILE_UPLOAD_REQ));
+            msg.set_token(token_);
+            msg.set_sender_id(user_id_);
+            msg.set_timestamp(time(nullptr));
+            auto* body = msg.mutable_file_upload_req();
+            body->set_file_name(filename);
+            body->set_file_size(fsize);
+            body->set_file_data(filedata);
+            body->set_chunk_seq(0);
+            body->set_total_chunks(1);
+
+            if (!send_message(msg)) return false;
+            auto resp = wait_response(MessageType::FILE_UPLOAD_RSP, 30);
+            if (resp.type() == static_cast<uint32_t>(MessageType::FILE_UPLOAD_RSP) && resp.has_file_upload_rsp()) {
+                auto& r = resp.file_upload_rsp();
+                if (r.success()) {
+                    std::cout << "[成功] 文件上传成功! file_id=" << r.file_id() << std::endl;
+                    return true;
+                }
+                std::cerr << "[失败] " << r.error_message() << std::endl;
             }
-            std::cerr << "[失败] " << r.error_message() << std::endl;
+            return false;
+        }
+
+        // === 大文件：分片上传 + 断点续传 ===
+        uint32_t total_chunks = static_cast<uint32_t>((fsize + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
+
+        // 1. 查询服务端已有分片（断点续传）
+        std::set<uint32_t> received_set;
+        {
+            chatroom::ChatMessage status_msg;
+            status_msg.set_type(static_cast<uint32_t>(MessageType::FILE_UPLOAD_STATUS_REQ));
+            status_msg.set_token(token_);
+            status_msg.set_sender_id(user_id_);
+            status_msg.set_timestamp(time(nullptr));
+            auto* sb = status_msg.mutable_file_upload_status_req();
+            sb->set_file_name(filename);
+            sb->set_file_size(fsize);
+
+            if (!send_message(status_msg)) { fclose(fp); return false; }
+            auto sr = wait_response(MessageType::FILE_UPLOAD_STATUS_RSP, 10);
+            if (sr.type() == static_cast<uint32_t>(MessageType::FILE_UPLOAD_STATUS_RSP) &&
+                sr.has_file_upload_status_rsp()) {
+                auto& r = sr.file_upload_status_rsp();
+                if (r.success()) {
+                    for (int i = 0; i < r.received_chunks_size(); ++i) {
+                        received_set.insert(r.received_chunks(i));
+                    }
+                    if (!received_set.empty()) {
+                        std::cout << "[续传] 服务端已有 " << received_set.size()
+                                  << "/" << r.total_chunks() << " 个分片，继续上传..." << std::endl;
+                    }
+                }
+            }
+        }
+
+        // 2. 上传缺失的分片
+        uint32_t uploaded = received_set.size();
+        uint32_t skipped = 0;
+        for (uint32_t seq = 0; seq < total_chunks; ++seq) {
+            if (received_set.count(seq)) {
+                skipped++;
+                continue;
+            }
+
+            // 读取本分片数据
+            uint64_t offset = static_cast<uint64_t>(seq) * FILE_CHUNK_SIZE;
+            uint64_t chunk_size = std::min(static_cast<uint64_t>(FILE_CHUNK_SIZE), fsize - offset);
+            std::string chunk_data(chunk_size, '\0');
+            fseek(fp, offset, SEEK_SET);
+            fread(&chunk_data[0], 1, chunk_size, fp);
+
+            chatroom::ChatMessage chunk_msg;
+            chunk_msg.set_type(static_cast<uint32_t>(MessageType::FILE_UPLOAD_CHUNK_REQ));
+            chunk_msg.set_token(token_);
+            chunk_msg.set_sender_id(user_id_);
+            chunk_msg.set_timestamp(time(nullptr));
+            auto* cb = chunk_msg.mutable_file_upload_chunk_req();
+            cb->set_file_name(filename);
+            cb->set_file_size(fsize);
+            cb->set_file_data(chunk_data);
+            cb->set_chunk_seq(seq);
+            cb->set_total_chunks(total_chunks);
+
+            if (!send_message(chunk_msg)) { fclose(fp); return false; }
+
+            // 最后一个分片单独等待 FILE_UPLOAD_CHUNK_RSP 获取 file_id
+            if (seq == total_chunks - 1) {
+                auto cr = wait_response(MessageType::FILE_UPLOAD_CHUNK_RSP, 30);
+                if (cr.type() == static_cast<uint32_t>(MessageType::FILE_UPLOAD_CHUNK_RSP) &&
+                    cr.has_file_upload_chunk_rsp()) {
+                    auto& r = cr.file_upload_chunk_rsp();
+                    if (r.success()) {
+                        uploaded++;
+                        std::cout << "\r[进度] " << uploaded << "/" << total_chunks
+                                  << " (" << (uploaded * 100 / total_chunks) << "%)" << std::endl;
+                        std::cout << "[成功] 文件上传成功! file_id=" << r.file_id() << std::endl;
+                        fclose(fp);
+                        return true;
+                    }
+                    std::cerr << "[失败] " << r.error_message() << std::endl;
+                    fclose(fp);
+                    return false;
+                }
+            } else {
+                // 中间分片：快速确认
+                auto cr = wait_response(MessageType::FILE_UPLOAD_CHUNK_RSP, 10);
+                if (cr.type() != static_cast<uint32_t>(MessageType::FILE_UPLOAD_CHUNK_RSP) ||
+                    !cr.file_upload_chunk_rsp().success()) {
+                    std::cerr << "\n[错误] 分片 " << seq << " 上传失败" << std::endl;
+                    fclose(fp);
+                    return false;
+                }
+                uploaded++;
+                std::cout << "\r[进度] " << uploaded << "/" << total_chunks
+                          << " (" << (uploaded * 100 / total_chunks) << "%)" << std::flush;
+            }
+        }
+
+        fclose(fp);
+        if (skipped == total_chunks) {
+            std::cout << "[信息] 文件已在服务端完整存在" << std::endl;
+            return true;
         }
         return false;
     }
 
-    bool download_file(uint64_t file_id, const std::string& /*save_path*/) {
+    bool download_file(uint64_t file_id, const std::string& save_path) {
+        // 1. 请求下载元数据
         chatroom::ChatMessage msg;
         msg.set_type(static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_REQ));
         msg.set_token(token_);
@@ -698,18 +843,77 @@ public:
 
         if (!send_message(msg)) return false;
         auto resp = wait_response(MessageType::FILE_DOWNLOAD_RSP, 30);
-        if (resp.type() == static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_RSP) && resp.has_file_download_rsp()) {
-            auto& r = resp.file_download_rsp();
-            if (r.success()) {
-                std::cout << "[成功] 文件下载请求已发送: " << r.file_name()
-                          << " (" << r.file_size() << " bytes)" << std::endl;
-                // 注意：实际文件内容通过 file_upload_req 中的 file_data 字段传回
-                // 这里简化为接受响应即可
-                return true;
-            }
-            std::cerr << "[失败] " << r.error_message() << std::endl;
+        if (resp.type() != static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_RSP) ||
+            !resp.has_file_download_rsp()) {
+            return false;
         }
-        return false;
+
+        auto& r = resp.file_download_rsp();
+        if (!r.success()) {
+            std::cerr << "[失败] " << r.error_message() << std::endl;
+            return false;
+        }
+
+        std::string out_path = save_path;
+        if (out_path.empty()) out_path = r.file_name();
+
+        // === 小文件：直接写入 ===
+        if (!r.file_data().empty()) {
+            FILE* fp = fopen(out_path.c_str(), "wb");
+            if (!fp) {
+                std::cerr << "[错误] 无法创建文件: " << out_path << std::endl;
+                return false;
+            }
+            fwrite(r.file_data().data(), 1, r.file_data().size(), fp);
+            fclose(fp);
+            std::cout << "[成功] 文件已保存到: " << out_path
+                      << " (" << r.file_size() << " bytes)" << std::endl;
+            return true;
+        }
+
+        // === 大文件：分片下载 ===
+        uint64_t fsize = r.file_size();
+        uint32_t total_chunks = static_cast<uint32_t>((fsize + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
+        std::cout << "[信息] 下载文件: " << r.file_name()
+                  << " (" << fsize << " bytes, " << total_chunks << " 分片)" << std::endl;
+
+        FILE* fp = fopen(out_path.c_str(), "wb");
+        if (!fp) {
+            std::cerr << "[错误] 无法创建文件: " << out_path << std::endl;
+            return false;
+        }
+
+        for (uint32_t seq = 0; seq < total_chunks; ++seq) {
+            chatroom::ChatMessage chunk_msg;
+            chunk_msg.set_type(static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_CHUNK_REQ));
+            chunk_msg.set_token(token_);
+            chunk_msg.set_sender_id(user_id_);
+            chunk_msg.set_target_id(file_id);
+            chunk_msg.set_timestamp(time(nullptr));
+            auto* cb = chunk_msg.mutable_file_download_chunk_req();
+            cb->set_file_id(file_id);
+            cb->set_chunk_seq(seq);
+
+            if (!send_message(chunk_msg)) { fclose(fp); return false; }
+            auto cr = wait_response(MessageType::FILE_DOWNLOAD_CHUNK_RSP, 30);
+            if (cr.type() != static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_CHUNK_RSP) ||
+                !cr.has_file_download_chunk_rsp()) {
+                std::cerr << "\n[错误] 分片 " << seq << " 下载失败" << std::endl;
+                fclose(fp);
+                return false;
+            }
+
+            auto& chunk_r = cr.file_download_chunk_rsp();
+            fwrite(chunk_r.file_data().data(), 1, chunk_r.file_data().size(), fp);
+
+            std::cout << "\r[进度] " << (seq + 1) << "/" << total_chunks
+                      << " (" << ((seq + 1) * 100 / total_chunks) << "%)" << std::flush;
+        }
+
+        fclose(fp);
+        std::cout << std::endl;
+        std::cout << "[成功] 文件已保存到: " << out_path << std::endl;
+        return true;
     }
 
     // 获取缓存数据
@@ -952,9 +1156,10 @@ void menu_friend(ChatClient& client) {
         std::cout << "  3. 删除好友" << std::endl;
         std::cout << "  4. 拉黑好友" << std::endl;
         std::cout << "  5. 解除拉黑" << std::endl;
+        std::cout << "  6. 查看已拉黑用户" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(5);
+        int choice = read_choice(6);
         switch (choice) {
             case 0: return;
             case 1: client.query_friends(); break;
@@ -978,6 +1183,9 @@ void menu_friend(ChatClient& client) {
                 client.unblock_friend(uid);
                 break;
             }
+            case 6:
+                client.query_blocked();
+                break;
         }
         client.flush_notifications();
     }

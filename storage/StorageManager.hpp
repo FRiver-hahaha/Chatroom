@@ -84,6 +84,7 @@ public:
     bool unblock_friend(uint64_t user_id, uint64_t friend_id);
     bool is_blocked_by(uint64_t user_id, uint64_t friend_id);
     std::vector<QueryResult::FriendInfo> get_friends(uint64_t user_id);
+    std::vector<QueryResult::FriendInfo> get_blocked_users(uint64_t user_id);
 
     // 群组模块
     uint64_t create_group(const std::string& group_name,
@@ -132,6 +133,15 @@ public:
                                 uint64_t uploader_id,
                                 uint64_t target_id);
     QueryResult::FileInfo get_file_info(uint64_t file_id);
+
+    // 分片上传状态追踪 (Redis)
+    bool record_file_chunk(uint64_t uploader_id, const std::string& file_name,
+                           uint64_t file_size, uint32_t chunk_seq);
+    std::vector<uint32_t> get_received_chunks(uint64_t uploader_id,
+                                               const std::string& file_name,
+                                               uint64_t file_size);
+    bool clear_file_chunks(uint64_t uploader_id, const std::string& file_name,
+                           uint64_t file_size);
 
     // 在线状态
     void set_online(uint64_t user_id);
