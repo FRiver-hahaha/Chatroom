@@ -29,7 +29,7 @@ public:
         else if (tv >= 100 && tv < 200) dispatch_friend(conn, msg, result);
         else if (tv >= 200 && tv < 300) dispatch_group(conn, msg, result);
         else if (tv >= 300 && tv < 400) dispatch_chat(conn, msg, result);
-        else if (tv >= 400 && tv < 500) dispatch_file(conn, msg, result);
+        else if (tv >= 420 && tv < 440) dispatch_file_send(conn, msg, result);
         else std::cerr << "[MessageDispatcher] Unknown type: " << tv << std::endl;
     }
 
@@ -174,7 +174,11 @@ private:
         fwd.set_type(static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP));
         fwd.set_sender_id(msg.sender_id);
         fwd.set_target_id(msg.target_id);
-        fwd.mutable_private_chat_rsp()->set_success(true);
+        fwd.set_timestamp(msg.timestamp);
+        auto* body = fwd.mutable_private_chat_rsp();
+        body->set_success(true);
+        body->set_content(msg.payload);
+        body->set_sender_name(conn->username);
         std::string s;
         fwd.SerializeToString(&s);
         sender_(target_fd, s);
@@ -192,23 +196,76 @@ private:
             fwd.set_type(static_cast<uint32_t>(MessageType::GROUP_CHAT_RSP));
             fwd.set_sender_id(msg.sender_id);
             fwd.set_group_id(msg.group_id);
-            fwd.mutable_group_chat_rsp()->set_success(true);
+            fwd.set_timestamp(msg.timestamp);
+            auto* body = fwd.mutable_group_chat_rsp();
+            body->set_success(true);
+            body->set_content(msg.payload);
+            body->set_sender_name(conn->username);
             std::string s;
             fwd.SerializeToString(&s);
             sender_(fd, s);
         }
     }
 
-    // ===== File =====
-    void dispatch_file(Connection* conn, const Message& msg, const QueryResult& result) {
+    // ===== File Send (420-439) =====
+    void dispatch_file_send(Connection* conn, const Message& msg, const QueryResult& result) {
         switch (msg.type) {
-            case MessageType::FILE_UPLOAD_REQ:        send_rsp(conn, msg, result); break;
-            case MessageType::FILE_DOWNLOAD_REQ:      send_rsp(conn, msg, result); break;
-            case MessageType::FILE_UPLOAD_CHUNK_REQ:  send_rsp(conn, msg, result); break;
-            case MessageType::FILE_UPLOAD_STATUS_REQ: send_rsp(conn, msg, result); break;
-            case MessageType::FILE_DOWNLOAD_CHUNK_REQ: send_rsp(conn, msg, result); break;
+            case MessageType::FILE_SEND_REQ:            handle_file_send(conn, msg, result); break;
+            case MessageType::FILE_SEND_CHUNK_REQ:      handle_file_send_chunk(conn, msg, result); break;
+            case MessageType::FILE_TRANSFER_ACCEPT_REQ: handle_file_transfer_accept(conn, msg, result); break;
+            case MessageType::FILE_RECEIVE_CHUNK_REQ:   handle_file_receive_chunk(conn, msg, result); break;
+            case MessageType::FILE_TRANSFER_STATUS_REQ: handle_file_transfer_status(conn, msg, result); break;
             default: break;
         }
+    }
+
+    void handle_file_send(Connection* conn, const Message& msg, const QueryResult& result) {
+        send_rsp(conn, msg, result);
+        if (!result.success || result.transfer_id == 0) return;
+
+        // 通知 B：A 向你发送文件
+        int target_fd = lookup_(msg.target_id);
+        ChatMessage notify;
+        notify.set_type(static_cast<uint32_t>(MessageType::FILE_TRANSFER_NOTIFY));
+        notify.set_sender_id(msg.sender_id);
+        notify.set_target_id(msg.target_id);
+        auto* nb = notify.mutable_file_transfer_notify();
+        nb->set_transfer_id(result.transfer_id);
+        nb->set_sender_id(msg.sender_id);
+        nb->set_sender_name(conn->username);
+        nb->set_file_name(msg.payload);
+        nb->set_file_size(msg.file_size);
+        nb->set_total_chunks(msg.total_chunks > 0 ? msg.total_chunks : 1);
+        if (!msg.file_hash.empty())
+            nb->set_file_hash(msg.file_hash);
+        std::string s;
+        notify.SerializeToString(&s);
+        if (target_fd >= 0) {
+            sender_(target_fd, s);
+        }
+        // 离线情况：消息已由 DatabaseQueryer 记录到 pending_transfers
+    }
+
+    void handle_file_send_chunk(Connection* conn, const Message& msg, const QueryResult& result) {
+        send_rsp(conn, msg, result);
+        // 不再主动推送分片给接收方；接收方通过 FILE_RECEIVE_CHUNK_REQ 拉取
+    }
+
+    void handle_file_transfer_accept(Connection* conn, const Message& msg, const QueryResult& result) {
+        send_rsp(conn, msg, result);
+        if (!result.success) return;
+        // 通知 A
+        notify_target(msg.target_id, "[系统通知] 用户 " + conn->username
+                      + " 已接受文件传输 #" + std::to_string(result.transfer_id));
+    }
+
+    void handle_file_receive_chunk(Connection* conn, const Message& msg, const QueryResult& result) {
+        // B 请求分片，直接返回
+        send_rsp(conn, msg, result);
+    }
+
+    void handle_file_transfer_status(Connection* conn, const Message& msg, const QueryResult& result) {
+        send_rsp(conn, msg, result);
     }
 
     SendFunc sender_;

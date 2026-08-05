@@ -26,6 +26,16 @@ struct QueryResult {
     uint32_t chunk_seq = 0;
     uint32_t total_chunks = 0;
     std::vector<uint32_t> received_chunks;  // 断点续传已收分片
+
+    // ===== 文件传输 (420-439) 相关 =====
+    uint64_t transfer_id = 0;
+    uint64_t target_user_id = 0;  // 接收方用户ID（用于转发）
+    std::string transfer_status;  // "sending" | "completed" | "rejected"
+    std::vector<uint32_t> sender_received_chunks;    // A 已上传的分片
+    std::vector<uint32_t> receiver_received_chunks;  // B 已接收的分片
+    std::string sender_name;  // 发送者用户名
+    std::string chunk_hash;   // SHA-256 of current chunk
+    std::string file_hash;    // SHA-256 of complete file
     
     // ===== 群组相关 =====
     uint64_t group_id = 0;

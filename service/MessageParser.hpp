@@ -125,37 +125,31 @@ public:
                             + std::to_string(proto_msg.get_history_req().group_id()) + "\n"
                             + std::to_string(proto_msg.get_history_req().limit());
                 break;
-            case ChatMessage::kFileUploadReq:
-                msg.payload = proto_msg.file_upload_req().file_name();
-                msg.file_data = proto_msg.file_upload_req().file_data();
-                msg.file_size = proto_msg.file_upload_req().file_size();
-                msg.chunk_seq = proto_msg.file_upload_req().chunk_seq();
-                msg.total_chunks = proto_msg.file_upload_req().total_chunks();
+            case ChatMessage::kFileSendReq:
+                msg.payload = proto_msg.file_send_req().file_name();
+                msg.file_size = proto_msg.file_send_req().file_size();
+                msg.total_chunks = proto_msg.file_send_req().total_chunks();
+                msg.file_hash = proto_msg.file_send_req().file_hash();
                 break;
-            case ChatMessage::kFileDownloadReq:
-                msg.payload = std::to_string(proto_msg.file_download_req().file_id());
+            case ChatMessage::kFileSendChunkReq:
+                // transfer_id 来自 envelope 的 target_id
+                msg.payload = std::to_string(msg.target_id);
+                msg.file_data = proto_msg.file_send_chunk_req().file_data();
+                msg.file_size = proto_msg.file_send_chunk_req().file_size();
+                msg.chunk_seq = proto_msg.file_send_chunk_req().chunk_seq();
+                msg.total_chunks = proto_msg.file_send_chunk_req().total_chunks();
+                msg.chunk_hash = proto_msg.file_send_chunk_req().chunk_hash();
                 break;
-            case ChatMessage::kFileUploadChunkReq:
-                msg.payload = proto_msg.file_upload_chunk_req().file_name();
-                msg.file_data = proto_msg.file_upload_chunk_req().file_data();
-                msg.file_size = proto_msg.file_upload_chunk_req().file_size();
-                msg.chunk_seq = proto_msg.file_upload_chunk_req().chunk_seq();
-                msg.total_chunks = proto_msg.file_upload_chunk_req().total_chunks();
+            case ChatMessage::kFileTransferAcceptReq:
+                msg.payload = std::to_string(proto_msg.file_transfer_accept_req().transfer_id())
+                            + "\n" + (proto_msg.file_transfer_accept_req().accept() ? "1" : "0");
                 break;
-            case ChatMessage::kFileUploadStatusReq:
-                msg.payload = proto_msg.file_upload_status_req().file_name() + "\n"
-                            + std::to_string(proto_msg.file_upload_status_req().file_size());
+            case ChatMessage::kFileReceiveChunkReq:
+                msg.payload = std::to_string(proto_msg.file_receive_chunk_req().transfer_id());
+                msg.chunk_seq = proto_msg.file_receive_chunk_req().chunk_seq();
                 break;
-            case ChatMessage::kFileDownloadChunkReq:
-                msg.payload = std::to_string(proto_msg.file_download_chunk_req().file_id());
-                msg.chunk_seq = proto_msg.file_download_chunk_req().chunk_seq();
-                break;
-            case ChatMessage::kFileDownloadChunkRsp:
-                msg.payload = proto_msg.file_download_chunk_rsp().file_name();
-                msg.file_data = proto_msg.file_download_chunk_rsp().file_data();
-                msg.file_size = proto_msg.file_download_chunk_rsp().file_size();
-                msg.chunk_seq = proto_msg.file_download_chunk_rsp().chunk_seq();
-                msg.total_chunks = proto_msg.file_download_chunk_rsp().total_chunks();
+            case ChatMessage::kFileTransferStatusReq:
+                msg.payload = std::to_string(proto_msg.file_transfer_status_req().transfer_id());
                 break;
             default:
                 break;
@@ -456,64 +450,54 @@ public:
                 }
                 break;
             }
-            case MessageType::FILE_UPLOAD_REQ: {
-                auto* body = proto_msg.mutable_file_upload_rsp();
+            case MessageType::FILE_SEND_REQ: {
+                auto* body = proto_msg.mutable_file_send_rsp();
                 body->set_success(result.success);
                 if (result.success) {
-                    body->set_file_id(result.file_id);
-                    body->set_file_name(result.file_name);
-                    body->set_file_size(result.file_size);
+                    body->set_transfer_id(result.transfer_id);
                 } else {
                     body->set_error_message(result.error_message);
                 }
                 break;
             }
-            case MessageType::FILE_DOWNLOAD_REQ: {
-                auto* body = proto_msg.mutable_file_download_rsp();
+            case MessageType::FILE_SEND_CHUNK_REQ: {
+                auto* body = proto_msg.mutable_file_send_chunk_rsp();
                 body->set_success(result.success);
-                if (result.success) {
-                    body->set_file_id(result.file_id);
-                    body->set_file_name(result.file_name);
-                    body->set_file_size(result.file_size);
-                    body->set_file_data(result.file_data);
-                } else {
-                    body->set_error_message(result.error_message);
-                }
+                if (!result.success) body->set_error_message(result.error_message);
                 break;
             }
-            case MessageType::FILE_UPLOAD_CHUNK_REQ: {
-                auto* body = proto_msg.mutable_file_upload_chunk_rsp();
+            case MessageType::FILE_TRANSFER_ACCEPT_REQ: {
+                auto* body = proto_msg.mutable_file_transfer_accept_rsp();
                 body->set_success(result.success);
-                if (result.success) {
-                    body->set_file_id(result.file_id);
-                    body->set_file_name(result.file_name);
-                    body->set_file_size(result.file_size);
-                } else {
-                    body->set_error_message(result.error_message);
-                }
+                if (!result.success) body->set_error_message(result.error_message);
                 break;
             }
-            case MessageType::FILE_UPLOAD_STATUS_REQ: {
-                auto* body = proto_msg.mutable_file_upload_status_rsp();
-                body->set_success(result.success);
-                if (result.success) {
-                    body->set_file_id(result.file_id);
-                    body->set_total_chunks(result.total_chunks);
-                    for (auto seq : result.received_chunks) {
-                        body->add_received_chunks(seq);
-                    }
-                } else {
-                    body->set_error_message(result.error_message);
-                }
-                break;
-            }
-            case MessageType::FILE_DOWNLOAD_CHUNK_REQ: {
-                auto* body = proto_msg.mutable_file_download_chunk_rsp();
+            case MessageType::FILE_RECEIVE_CHUNK_REQ: {
+                auto* body = proto_msg.mutable_file_receive_chunk_rsp();
                 body->set_file_name(result.file_name);
                 body->set_file_size(result.file_size);
                 body->set_file_data(result.file_data);
                 body->set_chunk_seq(result.chunk_seq);
                 body->set_total_chunks(result.total_chunks);
+                body->set_chunk_hash(result.chunk_hash);
+                break;
+            }
+            case MessageType::FILE_TRANSFER_STATUS_REQ: {
+                auto* body = proto_msg.mutable_file_transfer_status_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_file_name(result.file_name);
+                    body->set_file_size(result.file_size);
+                    body->set_total_chunks(result.total_chunks);
+                    body->set_status(result.transfer_status);
+                    body->set_file_hash(result.file_hash);
+                    for (auto seq : result.sender_received_chunks)
+                        body->add_sender_received_chunks(seq);
+                    for (auto seq : result.receiver_received_chunks)
+                        body->add_receiver_received_chunks(seq);
+                } else {
+                    body->set_error_message(result.error_message);
+                }
                 break;
             }
             default:
@@ -585,7 +569,11 @@ private:
             flags |= static_cast<uint32_t>(MessageFlag::NEED_PERMISSION);
         } else if (type_val >= 300 && type_val < 400) {
             flags |= static_cast<uint32_t>(MessageFlag::NEED_DATABASE);
-        } else if (type_val >= 400 && type_val < 500) {
+        }
+
+        // 文件发送模块也需要登录+数据库
+        if (type_val >= 420 && type_val < 440) {
+            flags |= static_cast<uint32_t>(MessageFlag::NEED_LOGIN);
             flags |= static_cast<uint32_t>(MessageFlag::NEED_DATABASE);
         }
 

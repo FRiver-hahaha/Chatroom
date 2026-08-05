@@ -126,27 +126,41 @@ public:
     std::vector<QueryResult::MessageHistory> get_offline_messages(uint64_t user_id);
     bool mark_read(uint64_t message_id);
 
-    // 文件模块
-    uint64_t save_file_metadata(const std::string& file_name,
-                                uint64_t file_size,
-                                const std::string& file_path,
-                                uint64_t uploader_id,
-                                uint64_t target_id);
-    QueryResult::FileInfo get_file_info(uint64_t file_id);
-
-    // 分片上传状态追踪 (Redis)
-    bool record_file_chunk(uint64_t uploader_id, const std::string& file_name,
-                           uint64_t file_size, uint32_t chunk_seq);
-    std::vector<uint32_t> get_received_chunks(uint64_t uploader_id,
-                                               const std::string& file_name,
-                                               uint64_t file_size);
-    bool clear_file_chunks(uint64_t uploader_id, const std::string& file_name,
-                           uint64_t file_size);
-
     // 在线状态
     void set_online(uint64_t user_id);
     void set_offline(uint64_t user_id);
     bool is_online(uint64_t user_id);
+
+    // ===== 文件传输 (420-439) =====
+    struct TransferInfo {
+        uint64_t transfer_id;
+        uint64_t sender_id;
+        uint64_t receiver_id;
+        std::string file_name;
+        uint64_t file_size;
+        uint32_t total_chunks;
+        std::string file_hash;
+        std::string status;  // "sending" | "completed" | "rejected"
+        uint64_t created_at;
+    };
+
+    uint64_t create_transfer(uint64_t sender_id, uint64_t receiver_id,
+                             const std::string& file_name, uint64_t file_size,
+                             uint32_t total_chunks, const std::string& file_hash = "");
+    TransferInfo get_transfer_info(uint64_t transfer_id);
+    bool record_sender_chunk(uint64_t transfer_id, uint32_t chunk_seq);
+    bool record_receiver_chunk(uint64_t transfer_id, uint32_t chunk_seq);
+    std::vector<uint32_t> get_sender_chunks(uint64_t transfer_id);
+    std::vector<uint32_t> get_receiver_chunks(uint64_t transfer_id);
+    bool save_transfer_chunk_data(uint64_t transfer_id, uint32_t chunk_seq,
+                                  const std::string& data, const std::string& chunk_hash = "");
+    std::string get_transfer_chunk_data(uint64_t transfer_id, uint32_t chunk_seq);
+    std::string get_transfer_chunk_hash(uint64_t transfer_id, uint32_t chunk_seq);
+    std::vector<TransferInfo> get_pending_transfers(uint64_t user_id);
+    bool add_pending_transfer(uint64_t user_id, uint64_t transfer_id);
+    bool clear_pending_transfers(uint64_t user_id);
+    bool complete_transfer(uint64_t transfer_id);
+    bool reject_transfer(uint64_t transfer_id);
 
     // 健康检查
     bool is_connected() const;

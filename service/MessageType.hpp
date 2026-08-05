@@ -72,21 +72,6 @@ enum class MessageType : uint32_t {
     GET_GROUP_HISTORY_RSP = 307,
     OFFLINE_MSG_NOTIFY = 308,
     
-    // ===== 文件模块 400-499 =====
-    FILE_UPLOAD_REQ = 400,
-    FILE_UPLOAD_RSP = 401,
-    FILE_DOWNLOAD_REQ = 402,
-    FILE_DOWNLOAD_RSP = 403,
-    FILE_UPLOAD_CHUNK_REQ = 404,
-    FILE_UPLOAD_CHUNK_RSP = 405,
-    OFFLINE_FILE_NOTIFY = 406,
-    FILE_UPLOAD_STATUS_REQ = 407,
-    FILE_UPLOAD_STATUS_RSP = 408,
-    FILE_DOWNLOAD_CHUNK_REQ = 409,
-    FILE_DOWNLOAD_CHUNK_RSP = 410,
-    FILE_LIST_INCOMPLETE_REQ = 411,
-    FILE_LIST_INCOMPLETE_RSP = 412,
-    
     // ===== 动态模块 500-599 =====
     MOMENT_PUBLISH_REQ = 500,
     MOMENT_PUBLISH_RSP = 501,
@@ -94,6 +79,19 @@ enum class MessageType : uint32_t {
     MOMENT_QUERY_RSP = 503,
     GAME_START_REQ = 504,
     GAME_START_RSP = 505,
+
+    // ===== 文件发送模块 420-439 =====
+    FILE_SEND_REQ = 420,
+    FILE_SEND_RSP = 421,
+    FILE_SEND_CHUNK_REQ = 422,
+    FILE_SEND_CHUNK_RSP = 423,
+    FILE_TRANSFER_NOTIFY = 424,
+    FILE_TRANSFER_ACCEPT_REQ = 425,
+    FILE_TRANSFER_ACCEPT_RSP = 426,
+    FILE_RECEIVE_CHUNK_REQ = 427,
+    FILE_RECEIVE_CHUNK_RSP = 428,
+    FILE_TRANSFER_STATUS_REQ = 429,
+    FILE_TRANSFER_STATUS_RSP = 430,
 };
 
 enum class MessageFlag : uint32_t {
@@ -122,6 +120,8 @@ struct Message {
     uint64_t file_size = 0;
     uint32_t chunk_seq = 0;
     uint32_t total_chunks = 0;
+    std::string chunk_hash;  // SHA-256 of file_data (32 bytes raw)
+    std::string file_hash;   // SHA-256 of complete file (32 bytes raw)
     
     bool is_request() const {
         return flags & static_cast<uint32_t>(MessageFlag::IS_REQUEST);
@@ -194,16 +194,17 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::GROUP_CHAT_RSP: return "GROUP_CHAT_RSP";
         case MessageType::GET_HISTORY_REQ: return "GET_HISTORY_REQ";
         case MessageType::GET_HISTORY_RSP: return "GET_HISTORY_RSP";
-        case MessageType::FILE_UPLOAD_REQ: return "FILE_UPLOAD_REQ";
-        case MessageType::FILE_UPLOAD_RSP: return "FILE_UPLOAD_RSP";
-        case MessageType::FILE_DOWNLOAD_REQ: return "FILE_DOWNLOAD_REQ";
-        case MessageType::FILE_DOWNLOAD_RSP: return "FILE_DOWNLOAD_RSP";
-        case MessageType::FILE_UPLOAD_CHUNK_REQ: return "FILE_UPLOAD_CHUNK_REQ";
-        case MessageType::FILE_UPLOAD_CHUNK_RSP: return "FILE_UPLOAD_CHUNK_RSP";
-        case MessageType::FILE_UPLOAD_STATUS_REQ: return "FILE_UPLOAD_STATUS_REQ";
-        case MessageType::FILE_UPLOAD_STATUS_RSP: return "FILE_UPLOAD_STATUS_RSP";
-        case MessageType::FILE_DOWNLOAD_CHUNK_REQ: return "FILE_DOWNLOAD_CHUNK_REQ";
-        case MessageType::FILE_DOWNLOAD_CHUNK_RSP: return "FILE_DOWNLOAD_CHUNK_RSP";
+        case MessageType::FILE_SEND_REQ: return "FILE_SEND_REQ";
+        case MessageType::FILE_SEND_RSP: return "FILE_SEND_RSP";
+        case MessageType::FILE_SEND_CHUNK_REQ: return "FILE_SEND_CHUNK_REQ";
+        case MessageType::FILE_SEND_CHUNK_RSP: return "FILE_SEND_CHUNK_RSP";
+        case MessageType::FILE_TRANSFER_NOTIFY: return "FILE_TRANSFER_NOTIFY";
+        case MessageType::FILE_TRANSFER_ACCEPT_REQ: return "FILE_TRANSFER_ACCEPT_REQ";
+        case MessageType::FILE_TRANSFER_ACCEPT_RSP: return "FILE_TRANSFER_ACCEPT_RSP";
+        case MessageType::FILE_RECEIVE_CHUNK_REQ: return "FILE_RECEIVE_CHUNK_REQ";
+        case MessageType::FILE_RECEIVE_CHUNK_RSP: return "FILE_RECEIVE_CHUNK_RSP";
+        case MessageType::FILE_TRANSFER_STATUS_REQ: return "FILE_TRANSFER_STATUS_REQ";
+        case MessageType::FILE_TRANSFER_STATUS_RSP: return "FILE_TRANSFER_STATUS_RSP";
         default: return "UNKNOWN";
     }
 }

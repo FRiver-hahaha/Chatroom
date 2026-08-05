@@ -31,29 +31,7 @@ pkg_check_modules(MYSQLCLIENT REQUIRED mysqlclient)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
-# ===== lib: 客户端网络库（纯 C++17，无 Qt 依赖）=====
-add_library(chatroom_client STATIC
-    lib/chat_client.cpp
-    ${PROTO_SRCS}
-)
-
-target_include_directories(chatroom_client PUBLIC
-    ${CMAKE_SOURCE_DIR}
-    ${PROTO_GEN_DIR}
-    ${CMAKE_BINARY_DIR}
-    ${PROTOBUF_INCLUDE_DIRS}
-)
-
-target_link_libraries(chatroom_client PUBLIC
-    ${PROTOBUF_LIBRARIES}
-    Threads::Threads
-)
-
-target_compile_options(chatroom_client PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-)
+# ===== lib: 客户端网络库（已移除 — client 为自包含单文件）=====
 
 # ===== Server executable =====
 add_executable(server
@@ -90,9 +68,10 @@ target_compile_options(server PRIVATE
     -Wshadow
 )
 
-# ===== CLI 客户端（链接 chatroom_client 库）=====
+# ===== CLI 客户端（自包含单文件，链接 proto 源）=====
 add_executable(client
     client/client.cpp
+    ${PROTO_SRCS}
 )
 
 target_include_directories(client PRIVATE
@@ -103,8 +82,8 @@ target_include_directories(client PRIVATE
 )
 
 target_link_libraries(client PRIVATE
-    chatroom_client
     ${PROTOBUF_LIBRARIES}
+    OpenSSL::Crypto
     Threads::Threads
 )
 

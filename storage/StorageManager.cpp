@@ -7,6 +7,8 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <sys/stat.h>
+#include <cerrno>
 
 namespace chatroom {
 
@@ -97,6 +99,34 @@ bool StorageManager::connect(const std::string& mysql_host, const std::string& m
         if (redis_ctx_) { redisFree(redis_ctx_); redis_ctx_ = nullptr; }
         return false;
     }
+    // 创建 file_transfers 表（如果不存在）
+    {
+        MYSQL* conn = mysql_pool_->acquire();
+        if (conn) {
+            const char* create_sql = R"SQL(
+                CREATE TABLE IF NOT EXISTS file_transfers (
+                    transfer_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    sender_id BIGINT UNSIGNED NOT NULL,
+                    receiver_id BIGINT UNSIGNED NOT NULL,
+                    file_name VARCHAR(255) NOT NULL,
+                    file_size BIGINT UNSIGNED NOT NULL,
+                    total_chunks INT UNSIGNED NOT NULL DEFAULT 0,
+                    file_hash VARCHAR(64) DEFAULT '',
+                    status ENUM('sending','completed','rejected') DEFAULT 'sending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB
+            )SQL";
+            if (mysql_query(conn, create_sql) != 0) {
+                std::cerr << "[StorageManager] CREATE file_transfers failed: "
+                          << mysql_error(conn) << std::endl;
+            }
+            // 兼容旧表：补加 file_hash 列
+            mysql_query(conn, "ALTER TABLE file_transfers ADD COLUMN IF NOT EXISTS "
+                             "file_hash VARCHAR(64) DEFAULT ''");
+            mysql_pool_->release(conn);
+        }
+    }
+
     std::cout << "[StorageManager] Connected to MySQL and Redis" << std::endl;
     return true;
 }
@@ -1117,37 +1147,75 @@ bool StorageManager::mark_read(uint64_t message_id) {
     return ok;
 }
 
-uint64_t StorageManager::save_file_metadata(const std::string& file_name, uint64_t file_size,
-                                              const std::string& file_path, uint64_t uploader_id,
-                                              uint64_t target_id) {
+// ===== 文件传输 (420-439) =====
+
+static std::string xfer_sender_key(uint64_t transfer_id) {
+    return "chatroom:transfer:" + std::to_string(transfer_id) + ":sender_chunks";
+}
+static std::string xfer_receiver_key(uint64_t transfer_id) {
+    return "chatroom:transfer:" + std::to_string(transfer_id) + ":receiver_chunks";
+}
+static std::string xfer_pending_key(uint64_t user_id) {
+    return "chatroom:transfer:pending:" + std::to_string(user_id);
+}
+static const char* FILE_STORAGE_BASE = "/tmp/chatroom_files";
+
+static std::string xfer_chunk_path(uint64_t transfer_id, uint32_t chunk_seq) {
+    return std::string(FILE_STORAGE_BASE) + "/transfer_" + std::to_string(transfer_id)
+           + "/chunk_" + std::to_string(chunk_seq);
+}
+
+uint64_t StorageManager::create_transfer(uint64_t sender_id, uint64_t receiver_id,
+                                         const std::string& file_name, uint64_t file_size,
+                                         uint32_t total_chunks, const std::string& file_hash) {
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return 0;
     std::string ef = escape_string(conn, file_name);
-    std::string ep = escape_string(conn, file_path);
-    std::string q = "INSERT INTO files (file_name, file_size, file_path, uploader_id, target_id) VALUES ('"
-                   + ef + "', " + std::to_string(file_size) + ", '" + ep + "', "
-                   + std::to_string(uploader_id) + ", " + std::to_string(target_id) + ")";
-    if (mysql_query(conn, q.c_str()) != 0) { mysql_pool_->release(conn); return 0; }
-    uint64_t file_id = mysql_insert_id(conn);
+    std::string efh = escape_string(conn, file_hash);
+    std::string q = "INSERT INTO file_transfers (sender_id, receiver_id, file_name, file_size, total_chunks, file_hash) VALUES ("
+                   + std::to_string(sender_id) + ", " + std::to_string(receiver_id) + ", '"
+                   + ef + "', " + std::to_string(file_size) + ", "
+                   + std::to_string(total_chunks) + ", '" + efh + "')";
+    if (mysql_query(conn, q.c_str()) != 0) {
+        std::cerr << "[StorageManager] create_transfer INSERT failed: "
+                  << mysql_error(conn) << std::endl;
+        mysql_pool_->release(conn); return 0;
+    }
+    uint64_t tid = mysql_insert_id(conn);
     mysql_pool_->release(conn);
-    return file_id;
+
+    // 创建分片存储目录（确保父目录存在）
+    mkdir(FILE_STORAGE_BASE, 0755);
+    std::string dir = std::string(FILE_STORAGE_BASE) + "/transfer_" + std::to_string(tid);
+    if (mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
+        std::cerr << "[StorageManager] Failed to create directory: " << dir
+                  << " (errno=" << errno << ")" << std::endl;
+        return 0;
+    }
+
+    return tid;
 }
 
-QueryResult::FileInfo StorageManager::get_file_info(uint64_t file_id) {
-    QueryResult::FileInfo info{};
+StorageManager::TransferInfo StorageManager::get_transfer_info(uint64_t transfer_id) {
+    TransferInfo info{};
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return info;
-    std::string q = "SELECT f.id, f.file_name, f.file_size, f.file_path, f.uploader_id, "
-                    "u.username, UNIX_TIMESTAMP(f.created_at) "
-                    "FROM files f JOIN users u ON f.uploader_id = u.id WHERE f.id=" + std::to_string(file_id);
+    std::string q = "SELECT transfer_id, sender_id, receiver_id, file_name, file_size, "
+                    "total_chunks, file_hash, status, UNIX_TIMESTAMP(created_at) "
+                    "FROM file_transfers WHERE transfer_id=" + std::to_string(transfer_id);
     if (mysql_query(conn, q.c_str()) == 0) {
         MYSQL_RES* res = mysql_store_result(conn);
         MYSQL_ROW row = mysql_fetch_row(res);
         if (row) {
-            info.file_id    = std::stoull(row[0]); info.file_name = row[1] ? row[1] : "";
-            info.file_size  = std::stoull(row[2]); info.file_path = row[3] ? row[3] : "";
-            info.sender_id  = std::stoull(row[4]); info.sender_name = row[5] ? row[5] : "";
-            info.timestamp  = row[6] ? std::stoull(row[6]) : 0;
+            info.transfer_id = std::stoull(row[0]);
+            info.sender_id   = std::stoull(row[1]);
+            info.receiver_id = std::stoull(row[2]);
+            info.file_name   = row[3] ? row[3] : "";
+            info.file_size   = std::stoull(row[4]);
+            info.total_chunks = static_cast<uint32_t>(std::stoul(row[5]));
+            info.file_hash   = row[6] ? row[6] : "";
+            info.status      = row[7] ? row[7] : "sending";
+            info.created_at  = row[8] ? std::stoull(row[8]) : 0;
         }
         mysql_free_result(res);
     }
@@ -1155,28 +1223,23 @@ QueryResult::FileInfo StorageManager::get_file_info(uint64_t file_id) {
     return info;
 }
 
-// ===== 分片上传状态追踪 =====
-
-static std::string make_chunk_key(uint64_t uploader_id, const std::string& file_name,
-                                   uint64_t file_size) {
-    return "chatroom:file:chunks:" + std::to_string(uploader_id) + ":"
-           + file_name + ":" + std::to_string(file_size);
-}
-
-bool StorageManager::record_file_chunk(uint64_t uploader_id, const std::string& file_name,
-                                        uint64_t file_size, uint32_t chunk_seq) {
-    std::string key = make_chunk_key(uploader_id, file_name, file_size);
+bool StorageManager::record_sender_chunk(uint64_t transfer_id, uint32_t chunk_seq) {
+    std::string key = xfer_sender_key(transfer_id);
     bool ok = redis_sadd(key, std::to_string(chunk_seq));
-    if (ok) redis_expire(key, 3600);  // 1 小时过期
+    if (ok) redis_expire(key, 86400);  // 24h
     return ok;
 }
 
-std::vector<uint32_t> StorageManager::get_received_chunks(uint64_t uploader_id,
-                                                            const std::string& file_name,
-                                                            uint64_t file_size) {
+bool StorageManager::record_receiver_chunk(uint64_t transfer_id, uint32_t chunk_seq) {
+    std::string key = xfer_receiver_key(transfer_id);
+    bool ok = redis_sadd(key, std::to_string(chunk_seq));
+    if (ok) redis_expire(key, 86400);
+    return ok;
+}
+
+std::vector<uint32_t> StorageManager::get_sender_chunks(uint64_t transfer_id) {
     std::vector<uint32_t> result;
-    std::string key = make_chunk_key(uploader_id, file_name, file_size);
-    auto members = redis_smembers(key);
+    auto members = redis_smembers(xfer_sender_key(transfer_id));
     for (const auto& m : members) {
         try { result.push_back(static_cast<uint32_t>(std::stoul(m))); }
         catch (...) {}
@@ -1184,10 +1247,90 @@ std::vector<uint32_t> StorageManager::get_received_chunks(uint64_t uploader_id,
     return result;
 }
 
-bool StorageManager::clear_file_chunks(uint64_t uploader_id, const std::string& file_name,
-                                        uint64_t file_size) {
-    std::string key = make_chunk_key(uploader_id, file_name, file_size);
-    return redis_del(key);
+std::vector<uint32_t> StorageManager::get_receiver_chunks(uint64_t transfer_id) {
+    std::vector<uint32_t> result;
+    auto members = redis_smembers(xfer_receiver_key(transfer_id));
+    for (const auto& m : members) {
+        try { result.push_back(static_cast<uint32_t>(std::stoul(m))); }
+        catch (...) {}
+    }
+    return result;
+}
+
+bool StorageManager::save_transfer_chunk_data(uint64_t transfer_id, uint32_t chunk_seq,
+                                              const std::string& data, const std::string& chunk_hash) {
+    std::string path = xfer_chunk_path(transfer_id, chunk_seq);
+    FILE* fp = fopen(path.c_str(), "wb");
+    if (!fp) return false;
+    fwrite(data.data(), 1, data.size(), fp);
+    fclose(fp);
+    // 存储 chunk_hash 到 Redis
+    if (!chunk_hash.empty()) {
+        std::string hkey = "chatroom:transfer:" + std::to_string(transfer_id)
+                         + ":chunk_hash:" + std::to_string(chunk_seq);
+        redis_set(hkey, chunk_hash);
+    }
+    return true;
+}
+
+std::string StorageManager::get_transfer_chunk_data(uint64_t transfer_id, uint32_t chunk_seq) {
+    std::string path = xfer_chunk_path(transfer_id, chunk_seq);
+    FILE* fp = fopen(path.c_str(), "rb");
+    if (!fp) return "";
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    std::string data(sz, '\0');
+    fread(&data[0], 1, sz, fp);
+    fclose(fp);
+    return data;
+}
+
+std::string StorageManager::get_transfer_chunk_hash(uint64_t transfer_id, uint32_t chunk_seq) {
+    std::string hkey = "chatroom:transfer:" + std::to_string(transfer_id)
+                     + ":chunk_hash:" + std::to_string(chunk_seq);
+    return redis_get(hkey);
+}
+
+std::vector<StorageManager::TransferInfo> StorageManager::get_pending_transfers(uint64_t user_id) {
+    std::vector<TransferInfo> result;
+    auto members = redis_smembers(xfer_pending_key(user_id));
+    for (const auto& m : members) {
+        try {
+            uint64_t tid = std::stoull(m);
+            auto info = get_transfer_info(tid);
+            if (info.transfer_id != 0) result.push_back(info);
+        } catch (...) {}
+    }
+    return result;
+}
+
+bool StorageManager::add_pending_transfer(uint64_t user_id, uint64_t transfer_id) {
+    return redis_sadd(xfer_pending_key(user_id), std::to_string(transfer_id));
+}
+
+bool StorageManager::clear_pending_transfers(uint64_t user_id) {
+    return redis_del(xfer_pending_key(user_id));
+}
+
+bool StorageManager::complete_transfer(uint64_t transfer_id) {
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string q = "UPDATE file_transfers SET status='completed' WHERE transfer_id="
+                   + std::to_string(transfer_id);
+    bool ok = (mysql_query(conn, q.c_str()) == 0);
+    mysql_pool_->release(conn);
+    return ok;
+}
+
+bool StorageManager::reject_transfer(uint64_t transfer_id) {
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string q = "UPDATE file_transfers SET status='rejected' WHERE transfer_id="
+                   + std::to_string(transfer_id);
+    bool ok = (mysql_query(conn, q.c_str()) == 0);
+    mysql_pool_->release(conn);
+    return ok;
 }
 
 void StorageManager::set_online(uint64_t user_id)   { redis_sadd("chatroom:online", std::to_string(user_id)); }

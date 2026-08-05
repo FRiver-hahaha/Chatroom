@@ -4,6 +4,7 @@
 #include "service/SessionState.hpp"
 #include "DatabaseQueryResult.hpp"
 #include "StorageManager.hpp"
+#include <openssl/sha.h>
 #include <memory>
 #include <iostream>
 #include <utility>
@@ -25,7 +26,7 @@ public:
         if (tv >= 100 && tv < 200)     return query_friend(conn_state, msg);
         if (tv >= 200 && tv < 300)     return query_group(conn_state, msg);
         if (tv >= 300 && tv < 400)     return query_chat(conn_state, msg);
-        if (tv >= 400 && tv < 500)     return query_file(conn_state, msg);
+        if (tv >= 420 && tv < 440)     return query_file_send(conn_state, msg);
         return fail("未知消息类型");
     }
 
@@ -355,157 +356,163 @@ private:
         return r;
     }
 
-    // ===== File =====
-    QueryResult query_file(SessionState conn_state, const Message& msg) {
+    // ===== File Send (420-439) =====
+    QueryResult query_file_send(SessionState conn_state, const Message& msg) {
         QueryResult r;
         if (!check_guards(conn_state, r)) return r;
 
         switch (msg.type) {
-            case MessageType::FILE_UPLOAD_REQ:        return handle_file_upload_query(msg);
-            case MessageType::FILE_DOWNLOAD_REQ:      return handle_file_download_query(msg);
-            case MessageType::FILE_UPLOAD_CHUNK_REQ:  return handle_file_chunk_upload_query(msg);
-            case MessageType::FILE_UPLOAD_STATUS_REQ: return handle_file_upload_status_query(msg);
-            case MessageType::FILE_DOWNLOAD_CHUNK_REQ: return handle_file_download_chunk_query(msg);
-            default: return fail("未知文件操作");
+            case MessageType::FILE_SEND_REQ:             return handle_file_send_query(msg);
+            case MessageType::FILE_SEND_CHUNK_REQ:       return handle_file_send_chunk_query(msg);
+            case MessageType::FILE_TRANSFER_ACCEPT_REQ:  return handle_file_transfer_accept_query(msg);
+            case MessageType::FILE_RECEIVE_CHUNK_REQ:    return handle_file_receive_chunk_query(msg);
+            case MessageType::FILE_TRANSFER_STATUS_REQ:  return handle_file_transfer_status_query(msg);
+            default: return fail("未知文件发送操作");
         }
     }
 
-    QueryResult handle_file_upload_query(const Message& msg) {
-        QueryResult r;
-        mkdir("/tmp/chatroom_files/", 0755);
-        std::string path = "/tmp/chatroom_files/" + msg.payload;
-        if (msg.chunk_seq == 0) {
-            FILE* fp = fopen(path.c_str(), "wb");
-            if (!fp) return fail("无法创建文件");
-            fwrite(msg.file_data.data(), 1, msg.file_data.size(), fp);
-            fclose(fp);
+    QueryResult handle_file_send_query(const Message& msg) {
+        // 校验好友关系
+        if (!storage_->is_friend(msg.sender_id, msg.target_id))
+            return fail("不是好友，无法发送文件");
+        if (storage_->is_blocked_by(msg.target_id, msg.sender_id))
+            return fail("你已被对方拉黑");
+
+        // 小文件：直接通过 msg.file_data + msg.file_size 获取
+        // 大文件：msg.total_chunks 已由客户端计算
+        uint32_t total = msg.total_chunks > 0 ? msg.total_chunks : 1;
+        uint64_t tid = storage_->create_transfer(msg.sender_id, msg.target_id,
+                                                  msg.payload, msg.file_size, total, msg.file_hash);
+        if (tid == 0) return fail("创建传输记录失败");
+
+        // 小文件：直接保存完整数据
+        if (total <= 1 && !msg.file_data.empty()) {
+            // 验证小文件哈希
+            if (!msg.chunk_hash.empty()) {
+                unsigned char computed[SHA256_DIGEST_LENGTH];
+                SHA256(reinterpret_cast<const unsigned char*>(msg.file_data.data()),
+                       msg.file_data.size(), computed);
+                std::string computed_hex;
+                computed_hex.reserve(SHA256_DIGEST_LENGTH * 2);
+                for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+                    char buf[3];
+                    snprintf(buf, sizeof(buf), "%02x", computed[i]);
+                    computed_hex += buf;
+                }
+                if (computed_hex != msg.chunk_hash) {
+                    storage_->reject_transfer(tid);
+                    return fail("分片哈希校验失败");
+                }
+            }
+            storage_->save_transfer_chunk_data(tid, 0, msg.file_data, msg.chunk_hash);
+            storage_->record_sender_chunk(tid, 0);
+            storage_->complete_transfer(tid);
         }
-        uint64_t fid = storage_->save_file_metadata(msg.payload, msg.file_size, path,
-                                                     msg.sender_id, msg.target_id);
-        r.success = (fid != 0);
-        if (r.success) { r.file_id = fid; r.file_name = msg.payload; r.file_size = msg.file_size; }
-        else r.error_message = "文件上传失败";
-        return r;
+
+        // 记录为对方的待处理传输
+        storage_->add_pending_transfer(msg.target_id, tid);
+
+        QueryResult r; r.success = true; r.transfer_id = tid; return r;
     }
 
-    QueryResult handle_file_chunk_upload_query(const Message& msg) {
-        QueryResult r;
-        mkdir("/tmp/chatroom_files/", 0755);
-        std::string path = "/tmp/chatroom_files/" + msg.payload;
+    QueryResult handle_file_send_chunk_query(const Message& msg) {
+        // msg.payload = transfer_id (string), msg.chunk_seq, msg.file_data, msg.total_chunks
+        uint64_t tid = 0;
+        try { tid = std::stoull(msg.payload); } catch (...) { return fail("无效的传输ID"); }
 
-        // 写入分片数据
-        FILE* fp = fopen(path.c_str(), msg.chunk_seq == 0 ? "wb" : "ab");
-        if (!fp) return fail("无法写入文件");
-        fwrite(msg.file_data.data(), 1, msg.file_data.size(), fp);
-        fclose(fp);
+        auto info = storage_->get_transfer_info(tid);
+        if (info.transfer_id == 0) return fail("传输记录不存在");
+        if (info.sender_id != msg.sender_id) return fail("无权操作此传输");
 
-        // 记录分片到 Redis
-        storage_->record_file_chunk(msg.sender_id, msg.payload, msg.file_size, msg.chunk_seq);
+        // 验证分片哈希（hex 比较）
+        if (!msg.chunk_hash.empty()) {
+            unsigned char computed[SHA256_DIGEST_LENGTH];
+            SHA256(reinterpret_cast<const unsigned char*>(msg.file_data.data()),
+                   msg.file_data.size(), computed);
+            char hex_buf[SHA256_DIGEST_LENGTH * 2 + 1];
+            for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+                snprintf(hex_buf + i * 2, 3, "%02x", computed[i]);
+            if (msg.chunk_hash != std::string(hex_buf, SHA256_DIGEST_LENGTH * 2))
+                return fail("分片哈希校验失败");
+        }
 
+        // 保存分片数据 + 哈希
+        if (!storage_->save_transfer_chunk_data(tid, msg.chunk_seq, msg.file_data, msg.chunk_hash))
+            return fail("保存分片失败");
+        storage_->record_sender_chunk(tid, msg.chunk_seq);
+
+        // 最后一个分片：标记完成
+        QueryResult r; r.success = true; r.transfer_id = tid;
+        r.target_user_id = info.receiver_id;  // 让 dispatcher 能查找接收方 fd
         if (msg.chunk_seq == msg.total_chunks - 1 || msg.total_chunks <= 1) {
-            // 最后一个分片：保存元数据，清理 Redis 状态
-            uint64_t fid = storage_->save_file_metadata(msg.payload, msg.file_size, path,
-                                                         msg.sender_id, msg.target_id);
-            storage_->clear_file_chunks(msg.sender_id, msg.payload, msg.file_size);
-            r.success = (fid != 0);
-            if (r.success) { r.file_id = fid; r.file_name = msg.payload; r.file_size = msg.file_size; }
-            else r.error_message = "文件保存失败";
+            storage_->complete_transfer(tid);
+        }
+        return r;
+    }
+
+    QueryResult handle_file_transfer_accept_query(const Message& msg) {
+        // msg.payload = "transfer_id\naccept_flag" (1=accept, 0=reject)
+        auto [tid_str, flag_str] = split_two(msg.payload);
+        uint64_t tid = std::stoull(tid_str);
+        bool accept = (flag_str == "1");
+
+        auto info = storage_->get_transfer_info(tid);
+        if (info.transfer_id == 0) return fail("传输记录不存在");
+        if (info.receiver_id != msg.sender_id) return fail("无权操作此传输");
+
+        if (accept) {
+            // B 接受传输：可以开始接收分片
+            QueryResult r; r.success = true; r.transfer_id = tid;
+            r.file_name = info.file_name; r.file_size = info.file_size;
+            r.total_chunks = info.total_chunks;
+            return r;
         } else {
-            r.success = true;
+            storage_->reject_transfer(tid);
+            return {true, "", 0, "", "", false};
         }
-        return r;
     }
 
-    QueryResult handle_file_download_query(const Message& msg) {
-        QueryResult r;
-        uint64_t fid = msg.target_id; if (fid == 0) fid = std::stoull(msg.payload);
-        auto info = storage_->get_file_info(fid);
-        r.success = (info.file_id != 0);
-        if (r.success) {
-            r.file_id   = info.file_id;
-            r.file_name = info.file_name;
-            r.file_size = info.file_size;
-            // 小文件直接返回内容，大文件仅返回元数据（客户端走分片下载）
-            if (info.file_size <= FILE_CHUNK_SIZE) {
-                FILE* fp = fopen(info.file_path.c_str(), "rb");
-                if (fp) {
-                    fseek(fp, 0, SEEK_END);
-                    long sz = ftell(fp);
-                    fseek(fp, 0, SEEK_SET);
-                    r.file_data.resize(sz);
-                    fread(&r.file_data[0], 1, sz, fp);
-                    fclose(fp);
-                }
-            }
-        } else {
-            r.error_message = "文件不存在";
-        }
-        return r;
-    }
+    QueryResult handle_file_receive_chunk_query(const Message& msg) {
+        // msg.payload = transfer_id, msg.chunk_seq
+        uint64_t tid = 0;
+        try { tid = std::stoull(msg.payload); } catch (...) { return fail("无效的传输ID"); }
 
-    QueryResult handle_file_upload_status_query(const Message& msg) {
-        QueryResult r;
-        // payload 格式: "file_name\nfile_size"
-        auto [file_name, size_str] = split_two(msg.payload);
-        uint64_t file_size = std::stoull(size_str);
+        auto info = storage_->get_transfer_info(tid);
+        if (info.transfer_id == 0) return fail("传输记录不存在");
+        if (info.receiver_id != msg.sender_id) return fail("无权接收此文件");
 
-        uint32_t total_chunks = static_cast<uint32_t>(
-            (file_size + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
-        if (total_chunks == 0) total_chunks = 1;
+        std::string chunk_data = storage_->get_transfer_chunk_data(tid, msg.chunk_seq);
+        if (chunk_data.empty()) return fail("分片数据不存在");
 
-        auto received = storage_->get_received_chunks(msg.sender_id, file_name, file_size);
+        // 获取该分片的哈希值
+        std::string chunk_hash = storage_->get_transfer_chunk_hash(tid, msg.chunk_seq);
 
-        r.success = true;
-        r.total_chunks = total_chunks;
-        r.received_chunks = received;
+        storage_->record_receiver_chunk(tid, msg.chunk_seq);
 
-        // 如果分片全部收齐，file_id 已存在则一并返回
-        if (received.size() >= total_chunks) {
-            // 检查文件是否已完成（MySQL 中有记录）
-            std::string path = "/tmp/chatroom_files/" + file_name;
-            FILE* fp = fopen(path.c_str(), "rb");
-            if (fp) {
-                fseek(fp, 0, SEEK_END);
-                uint64_t actual_size = ftell(fp);
-                fclose(fp);
-                if (actual_size >= file_size) {
-                    // 文件已完成，尝试获取已有的 file_id
-                    // 通过扫描 MySQL 或直接返回 complete 状态
-                    r.file_id = 0;  // 已完成但需重新确认
-                }
-            }
-        }
-
-        return r;
-    }
-
-    QueryResult handle_file_download_chunk_query(const Message& msg) {
-        QueryResult r;
-        uint64_t fid = msg.target_id; if (fid == 0) fid = std::stoull(msg.payload);
-        auto info = storage_->get_file_info(fid);
-        if (info.file_id == 0) return fail("文件不存在");
-
-        uint32_t total_chunks = static_cast<uint32_t>(
-            (info.file_size + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
-        if (total_chunks == 0) total_chunks = 1;
-
-        uint64_t offset = static_cast<uint64_t>(msg.chunk_seq) * FILE_CHUNK_SIZE;
-        uint64_t chunk_size = std::min(static_cast<uint64_t>(FILE_CHUNK_SIZE),
-                                        info.file_size - offset);
-
-        FILE* fp = fopen(info.file_path.c_str(), "rb");
-        if (!fp) return fail("无法打开文件");
-        fseek(fp, offset, SEEK_SET);
-        r.file_data.resize(chunk_size);
-        fread(&r.file_data[0], 1, chunk_size, fp);
-        fclose(fp);
-
-        r.success = true;
-        r.file_id = fid;
+        QueryResult r; r.success = true; r.transfer_id = tid;
+        r.file_data = std::move(chunk_data);
+        r.chunk_hash = std::move(chunk_hash);
+        r.chunk_seq = msg.chunk_seq;
+        r.total_chunks = info.total_chunks;
         r.file_name = info.file_name;
         r.file_size = info.file_size;
-        r.chunk_seq = msg.chunk_seq;
-        r.total_chunks = total_chunks;
+        return r;
+    }
+
+    QueryResult handle_file_transfer_status_query(const Message& msg) {
+        uint64_t tid = 0;
+        try { tid = std::stoull(msg.payload); } catch (...) { return fail("无效的传输ID"); }
+
+        auto info = storage_->get_transfer_info(tid);
+        if (info.transfer_id == 0) return fail("传输记录不存在");
+
+        QueryResult r; r.success = true; r.transfer_id = tid;
+        r.file_name = info.file_name; r.file_size = info.file_size;
+        r.total_chunks = info.total_chunks;
+        r.file_hash = info.file_hash;
+        r.transfer_status = info.status;
+        r.sender_received_chunks = storage_->get_sender_chunks(tid);
+        r.receiver_received_chunks = storage_->get_receiver_chunks(tid);
         return r;
     }
 

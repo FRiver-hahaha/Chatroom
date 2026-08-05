@@ -33,8 +33,21 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <openssl/sha.h>
 
 using chatroom::MessageType; // 简化枚举使用
+
+// SHA-256 工具函数
+static std::string sha256_hex(const std::string& data) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), hash);
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+        oss << std::setw(2) << static_cast<int>(hash[i]);
+    return oss.str();
+}
 
 // ============================================================
 // ChatClient 类
@@ -677,11 +690,23 @@ public:
         }
     }
 
-    // --- 文件 ---
-
     static constexpr size_t FILE_CHUNK_SIZE = 64 * 1024;  // 64KB
 
-    bool upload_file(const std::string& filepath) {
+    // ===== 文件发送给用户 (420-439) =====
+
+    // 发送文件给指定用户
+    bool send_file_to_user(uint64_t target_uid, const std::string& filepath) {
+        // 校验：必须是普通文件
+        struct stat st;
+        if (stat(filepath.c_str(), &st) != 0) {
+            std::cerr << "[错误] 无法访问文件: " << filepath << std::endl;
+            return false;
+        }
+        if (!S_ISREG(st.st_mode)) {
+            std::cerr << "[错误] 不是普通文件: " << filepath << std::endl;
+            return false;
+        }
+
         FILE* fp = fopen(filepath.c_str(), "rb");
         if (!fp) {
             std::cerr << "[错误] 无法打开文件: " << filepath << std::endl;
@@ -691,86 +716,85 @@ public:
         uint64_t fsize = ftell(fp);
         fseek(fp, 0, SEEK_SET);
 
-        // 提取文件名
+        // 二次校验：文件大小异常
+        if (fsize == 0 || fsize > 1024ULL * 1024 * 1024 * 10) {  // 最大 10GB
+            std::cerr << "[错误] 文件大小异常: " << fsize << " bytes" << std::endl;
+            fclose(fp); return false;
+        }
+
         std::string filename = filepath;
         auto pos = filepath.find_last_of('/');
         if (pos != std::string::npos) filename = filepath.substr(pos + 1);
 
-        std::cout << "[信息] 上传文件: " << filename << " (" << fsize << " bytes)" << std::endl;
+        uint32_t total_chunks = static_cast<uint32_t>(
+            (fsize + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
+        if (total_chunks == 0) total_chunks = 1;
 
-        // === 小文件：整文件上传 ===
-        if (fsize <= FILE_CHUNK_SIZE) {
-            std::string filedata(fsize, '\0');
-            fread(&filedata[0], 1, fsize, fp);
-            fclose(fp);
+        std::cout << "[信息] 发送文件 " << filename << " (" << fsize << " bytes, "
+                  << total_chunks << " 分片) 给 user=" << target_uid << std::endl;
 
+        // 计算完整文件哈希
+        std::string full_file_data(fsize, '\0');
+        fread(&full_file_data[0], 1, fsize, fp);
+        fseek(fp, 0, SEEK_SET);
+        std::string file_hash = sha256_hex(full_file_data);  // hex 编码，兼容 MySQL
+
+        // Step 1: 发起文件发送请求
+        uint64_t transfer_id = 0;
+        {
             chatroom::ChatMessage msg;
-            msg.set_type(static_cast<uint32_t>(MessageType::FILE_UPLOAD_REQ));
+            msg.set_type(static_cast<uint32_t>(MessageType::FILE_SEND_REQ));
             msg.set_token(token_);
             msg.set_sender_id(user_id_);
+            msg.set_target_id(target_uid);
             msg.set_timestamp(time(nullptr));
-            auto* body = msg.mutable_file_upload_req();
+            auto* body = msg.mutable_file_send_req();
             body->set_file_name(filename);
             body->set_file_size(fsize);
-            body->set_file_data(filedata);
-            body->set_chunk_seq(0);
-            body->set_total_chunks(1);
+            body->set_total_chunks(total_chunks);
+            body->set_file_hash(file_hash);
 
-            if (!send_message(msg)) return false;
-            auto resp = wait_response(MessageType::FILE_UPLOAD_RSP, 30);
-            if (resp.type() == static_cast<uint32_t>(MessageType::FILE_UPLOAD_RSP) && resp.has_file_upload_rsp()) {
-                auto& r = resp.file_upload_rsp();
-                if (r.success()) {
-                    std::cout << "[成功] 文件上传成功! file_id=" << r.file_id() << std::endl;
-                    return true;
-                }
-                std::cerr << "[失败] " << r.error_message() << std::endl;
+            if (!send_message(msg)) { fclose(fp); return false; }
+            auto resp = wait_response(MessageType::FILE_SEND_RSP, 10);
+            if (resp.type() != static_cast<uint32_t>(MessageType::FILE_SEND_RSP) ||
+                !resp.has_file_send_rsp() || !resp.file_send_rsp().success()) {
+                std::cerr << "[失败] " << (resp.has_file_send_rsp() ?
+                    resp.file_send_rsp().error_message() : "无响应") << std::endl;
+                fclose(fp); return false;
             }
-            return false;
+            transfer_id = resp.file_send_rsp().transfer_id();
+            std::cout << "[信息] 传输已创建, transfer_id=" << transfer_id << std::endl;
         }
 
-        // === 大文件：分片上传 + 断点续传 ===
-        uint32_t total_chunks = static_cast<uint32_t>((fsize + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
-
-        // 1. 查询服务端已有分片（断点续传）
-        std::set<uint32_t> received_set;
+        // Step 2: 查询已上传分片（续传）
+        std::set<uint32_t> sent_set;
         {
             chatroom::ChatMessage status_msg;
-            status_msg.set_type(static_cast<uint32_t>(MessageType::FILE_UPLOAD_STATUS_REQ));
+            status_msg.set_type(static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_REQ));
             status_msg.set_token(token_);
             status_msg.set_sender_id(user_id_);
+            status_msg.set_target_id(transfer_id);
             status_msg.set_timestamp(time(nullptr));
-            auto* sb = status_msg.mutable_file_upload_status_req();
-            sb->set_file_name(filename);
-            sb->set_file_size(fsize);
+            status_msg.mutable_file_transfer_status_req()->set_transfer_id(transfer_id);
 
-            if (!send_message(status_msg)) { fclose(fp); return false; }
-            auto sr = wait_response(MessageType::FILE_UPLOAD_STATUS_RSP, 10);
-            if (sr.type() == static_cast<uint32_t>(MessageType::FILE_UPLOAD_STATUS_RSP) &&
-                sr.has_file_upload_status_rsp()) {
-                auto& r = sr.file_upload_status_rsp();
-                if (r.success()) {
-                    for (int i = 0; i < r.received_chunks_size(); ++i) {
-                        received_set.insert(r.received_chunks(i));
-                    }
-                    if (!received_set.empty()) {
-                        std::cout << "[续传] 服务端已有 " << received_set.size()
-                                  << "/" << r.total_chunks() << " 个分片，继续上传..." << std::endl;
-                    }
+            if (send_message(status_msg)) {
+                auto sr = wait_response(MessageType::FILE_TRANSFER_STATUS_RSP, 10);
+                if (sr.type() == static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_RSP) &&
+                    sr.has_file_transfer_status_rsp() && sr.file_transfer_status_rsp().success()) {
+                    auto& r = sr.file_transfer_status_rsp();
+                    for (int i = 0; i < r.sender_received_chunks_size(); ++i)
+                        sent_set.insert(r.sender_received_chunks(i));
+                    if (!sent_set.empty())
+                        std::cout << "[续传] 已有 " << sent_set.size() << " 个分片" << std::endl;
                 }
             }
         }
 
-        // 2. 上传缺失的分片
-        uint32_t uploaded = received_set.size();
-        uint32_t skipped = 0;
+        // Step 3: 发送缺失的分片
+        uint32_t sent = sent_set.size();
         for (uint32_t seq = 0; seq < total_chunks; ++seq) {
-            if (received_set.count(seq)) {
-                skipped++;
-                continue;
-            }
+            if (sent_set.count(seq)) continue;
 
-            // 读取本分片数据
             uint64_t offset = static_cast<uint64_t>(seq) * FILE_CHUNK_SIZE;
             uint64_t chunk_size = std::min(static_cast<uint64_t>(FILE_CHUNK_SIZE), fsize - offset);
             std::string chunk_data(chunk_size, '\0');
@@ -778,141 +802,150 @@ public:
             fread(&chunk_data[0], 1, chunk_size, fp);
 
             chatroom::ChatMessage chunk_msg;
-            chunk_msg.set_type(static_cast<uint32_t>(MessageType::FILE_UPLOAD_CHUNK_REQ));
+            chunk_msg.set_type(static_cast<uint32_t>(MessageType::FILE_SEND_CHUNK_REQ));
             chunk_msg.set_token(token_);
             chunk_msg.set_sender_id(user_id_);
+            chunk_msg.set_target_id(transfer_id);  // transfer_id in envelope
             chunk_msg.set_timestamp(time(nullptr));
-            auto* cb = chunk_msg.mutable_file_upload_chunk_req();
+            auto* cb = chunk_msg.mutable_file_send_chunk_req();
             cb->set_file_name(filename);
             cb->set_file_size(fsize);
             cb->set_file_data(chunk_data);
             cb->set_chunk_seq(seq);
             cb->set_total_chunks(total_chunks);
+            cb->set_chunk_hash(sha256_hex(chunk_data));  // SHA-256 hex 编码
 
             if (!send_message(chunk_msg)) { fclose(fp); return false; }
-
-            // 最后一个分片单独等待 FILE_UPLOAD_CHUNK_RSP 获取 file_id
-            if (seq == total_chunks - 1) {
-                auto cr = wait_response(MessageType::FILE_UPLOAD_CHUNK_RSP, 30);
-                if (cr.type() == static_cast<uint32_t>(MessageType::FILE_UPLOAD_CHUNK_RSP) &&
-                    cr.has_file_upload_chunk_rsp()) {
-                    auto& r = cr.file_upload_chunk_rsp();
-                    if (r.success()) {
-                        uploaded++;
-                        std::cout << "\r[进度] " << uploaded << "/" << total_chunks
-                                  << " (" << (uploaded * 100 / total_chunks) << "%)" << std::endl;
-                        std::cout << "[成功] 文件上传成功! file_id=" << r.file_id() << std::endl;
-                        fclose(fp);
-                        return true;
-                    }
-                    std::cerr << "[失败] " << r.error_message() << std::endl;
-                    fclose(fp);
-                    return false;
-                }
-            } else {
-                // 中间分片：快速确认
-                auto cr = wait_response(MessageType::FILE_UPLOAD_CHUNK_RSP, 10);
-                if (cr.type() != static_cast<uint32_t>(MessageType::FILE_UPLOAD_CHUNK_RSP) ||
-                    !cr.file_upload_chunk_rsp().success()) {
-                    std::cerr << "\n[错误] 分片 " << seq << " 上传失败" << std::endl;
-                    fclose(fp);
-                    return false;
-                }
-                uploaded++;
-                std::cout << "\r[进度] " << uploaded << "/" << total_chunks
-                          << " (" << (uploaded * 100 / total_chunks) << "%)" << std::flush;
+            auto cr = wait_response(MessageType::FILE_SEND_CHUNK_RSP, 10);
+            if (cr.type() != static_cast<uint32_t>(MessageType::FILE_SEND_CHUNK_RSP) ||
+                !cr.file_send_chunk_rsp().success()) {
+                std::cerr << "\n[错误] 分片 " << seq << " 发送失败" << std::endl;
+                fclose(fp); return false;
             }
+            sent++;
+            std::cout << "\r[进度] " << sent << "/" << total_chunks
+                      << " (" << (sent * 100 / total_chunks) << "%)" << std::flush;
         }
 
         fclose(fp);
-        if (skipped == total_chunks) {
-            std::cout << "[信息] 文件已在服务端完整存在" << std::endl;
-            return true;
+        std::cout << std::endl << "[成功] 文件发送完成!" << std::endl;
+        return true;
+    }
+
+    // 接受/拒绝文件传输
+    bool accept_transfer(uint64_t transfer_id, bool accept) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::FILE_TRANSFER_ACCEPT_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_target_id(transfer_id);
+        msg.set_timestamp(time(nullptr));
+        auto* body = msg.mutable_file_transfer_accept_req();
+        body->set_transfer_id(transfer_id);
+        body->set_accept(accept);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::FILE_TRANSFER_ACCEPT_RSP, 10);
+        if (resp.type() == static_cast<uint32_t>(MessageType::FILE_TRANSFER_ACCEPT_RSP) &&
+            resp.has_file_transfer_accept_rsp()) {
+            auto& r = resp.file_transfer_accept_rsp();
+            if (r.success()) {
+                std::cout << "[成功] " << (accept ? "已接受" : "已拒绝") << "文件传输" << std::endl;
+                return true;
+            }
+            std::cerr << "[失败] " << r.error_message() << std::endl;
         }
         return false;
     }
 
-    bool download_file(uint64_t file_id, const std::string& save_path) {
-        // 1. 请求下载元数据
-        chatroom::ChatMessage msg;
-        msg.set_type(static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_REQ));
-        msg.set_token(token_);
-        msg.set_sender_id(user_id_);
-        msg.set_timestamp(time(nullptr));
-        msg.mutable_file_download_req()->set_file_id(file_id);
+    // 接收文件（拉取分片）
+    bool receive_file_chunks(uint64_t transfer_id, const std::string& save_path) {
+        // 查询传输状态
+        chatroom::ChatMessage status_msg;
+        status_msg.set_type(static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_REQ));
+        status_msg.set_token(token_);
+        status_msg.set_sender_id(user_id_);
+        status_msg.set_target_id(transfer_id);
+        status_msg.set_timestamp(time(nullptr));
+        status_msg.mutable_file_transfer_status_req()->set_transfer_id(transfer_id);
 
-        if (!send_message(msg)) return false;
-        auto resp = wait_response(MessageType::FILE_DOWNLOAD_RSP, 30);
-        if (resp.type() != static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_RSP) ||
-            !resp.has_file_download_rsp()) {
+        if (!send_message(status_msg)) return false;
+        auto sr = wait_response(MessageType::FILE_TRANSFER_STATUS_RSP, 10);
+        if (sr.type() != static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_RSP) ||
+            !sr.has_file_transfer_status_rsp() || !sr.file_transfer_status_rsp().success()) {
+            std::cerr << "[失败] 无法查询传输状态" << std::endl;
             return false;
         }
 
-        auto& r = resp.file_download_rsp();
-        if (!r.success()) {
-            std::cerr << "[失败] " << r.error_message() << std::endl;
-            return false;
-        }
-
-        std::string out_path = save_path;
-        if (out_path.empty()) out_path = r.file_name();
-
-        // === 小文件：直接写入 ===
-        if (!r.file_data().empty()) {
-            FILE* fp = fopen(out_path.c_str(), "wb");
-            if (!fp) {
-                std::cerr << "[错误] 无法创建文件: " << out_path << std::endl;
-                return false;
-            }
-            fwrite(r.file_data().data(), 1, r.file_data().size(), fp);
-            fclose(fp);
-            std::cout << "[成功] 文件已保存到: " << out_path
-                      << " (" << r.file_size() << " bytes)" << std::endl;
-            return true;
-        }
-
-        // === 大文件：分片下载 ===
+        auto& r = sr.file_transfer_status_rsp();
+        std::string fname = r.file_name();
         uint64_t fsize = r.file_size();
-        uint32_t total_chunks = static_cast<uint32_t>((fsize + FILE_CHUNK_SIZE - 1) / FILE_CHUNK_SIZE);
-        std::cout << "[信息] 下载文件: " << r.file_name()
-                  << " (" << fsize << " bytes, " << total_chunks << " 分片)" << std::endl;
+        uint32_t total_chunks = r.total_chunks();
 
-        FILE* fp = fopen(out_path.c_str(), "wb");
+        std::string out_path = save_path.empty() ? fname : save_path;
+
+        // 如果保存路径是目录，在目录下创建同名文件
+        struct stat path_st;
+        if (stat(out_path.c_str(), &path_st) == 0 && S_ISDIR(path_st.st_mode)) {
+            if (out_path.back() != '/') out_path += '/';
+            out_path += fname;
+            std::cout << "[信息] 保存到目录: " << out_path << std::endl;
+        }
+
+        std::cout << "[信息] 接收文件: " << fname << " (" << fsize << " bytes, "
+                  << total_chunks << " 分片)" << std::endl;
+
+        // 已有的分片（续传）
+        std::set<uint32_t> have_set;
+        for (int i = 0; i < r.receiver_received_chunks_size(); ++i)
+            have_set.insert(r.receiver_received_chunks(i));
+
+        if (!have_set.empty())
+            std::cout << "[续传] 已有 " << have_set.size() << " 个分片" << std::endl;
+
+        // 打开文件（续传模式：不截断已有数据）
+        FILE* fp = fopen(out_path.c_str(), "r+b");
+        if (!fp) fp = fopen(out_path.c_str(), "wb");
         if (!fp) {
             std::cerr << "[错误] 无法创建文件: " << out_path << std::endl;
             return false;
         }
 
+        // 拉取缺失的分片
+        uint32_t received = have_set.size();
         for (uint32_t seq = 0; seq < total_chunks; ++seq) {
+            if (have_set.count(seq)) continue;
+
             chatroom::ChatMessage chunk_msg;
-            chunk_msg.set_type(static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_CHUNK_REQ));
+            chunk_msg.set_type(static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_REQ));
             chunk_msg.set_token(token_);
             chunk_msg.set_sender_id(user_id_);
-            chunk_msg.set_target_id(file_id);
+            chunk_msg.set_target_id(transfer_id);
             chunk_msg.set_timestamp(time(nullptr));
-            auto* cb = chunk_msg.mutable_file_download_chunk_req();
-            cb->set_file_id(file_id);
-            cb->set_chunk_seq(seq);
+            chunk_msg.mutable_file_receive_chunk_req()->set_transfer_id(transfer_id);
+            chunk_msg.mutable_file_receive_chunk_req()->set_chunk_seq(seq);
 
             if (!send_message(chunk_msg)) { fclose(fp); return false; }
-            auto cr = wait_response(MessageType::FILE_DOWNLOAD_CHUNK_RSP, 30);
-            if (cr.type() != static_cast<uint32_t>(MessageType::FILE_DOWNLOAD_CHUNK_RSP) ||
-                !cr.has_file_download_chunk_rsp()) {
-                std::cerr << "\n[错误] 分片 " << seq << " 下载失败" << std::endl;
-                fclose(fp);
-                return false;
+            auto cr = wait_response(MessageType::FILE_RECEIVE_CHUNK_RSP, 30);
+            if (cr.type() != static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_RSP) ||
+                !cr.has_file_receive_chunk_rsp()) {
+                std::cerr << "\n[错误] 分片 " << seq << " 接收失败" << std::endl;
+                fclose(fp); return false;
             }
 
-            auto& chunk_r = cr.file_download_chunk_rsp();
-            fwrite(chunk_r.file_data().data(), 1, chunk_r.file_data().size(), fp);
+            auto& chunk_r = cr.file_receive_chunk_rsp();
 
-            std::cout << "\r[进度] " << (seq + 1) << "/" << total_chunks
-                      << " (" << ((seq + 1) * 100 / total_chunks) << "%)" << std::flush;
+            uint64_t offset = static_cast<uint64_t>(seq) * FILE_CHUNK_SIZE;
+            fseek(fp, offset, SEEK_SET);
+            fwrite(chunk_r.file_data().data(), 1, chunk_r.file_data().size(), fp);
+            received++;
+
+            std::cout << "\r[进度] " << received << "/" << total_chunks
+                      << " (" << (received * 100 / total_chunks) << "%)" << std::flush;
         }
 
         fclose(fp);
-        std::cout << std::endl;
-        std::cout << "[成功] 文件已保存到: " << out_path << std::endl;
+        std::cout << std::endl << "[成功] 文件已保存到: " << out_path << std::endl;
         return true;
     }
 
@@ -973,15 +1006,42 @@ private:
 
             uint32_t mtype = msg.type();
 
+            // 服务端推送的文件传输通知
+            if (mtype == static_cast<uint32_t>(MessageType::FILE_TRANSFER_NOTIFY) &&
+                msg.sender_id() != user_id_) {
+                if (msg.has_file_transfer_notify()) {
+                    auto& n = msg.file_transfer_notify();
+                    std::string info = "[文件传输] " + n.sender_name()
+                        + " 向你发送文件: " + n.file_name()
+                        + " (" + std::to_string(n.file_size()) + " bytes, "
+                        + std::to_string(n.total_chunks()) + " 分片)"
+                        + " [transfer_id=" + std::to_string(n.transfer_id()) + "]";
+                    notifications_.push_back(info);
+                    // 同时记录 transfer_id 供后续使用
+                    pending_transfers_.push_back(n.transfer_id());
+                }
+                return;
+            }
+
             // 服务端推送的私聊/群聊消息：sender_id != 自己
             if ((mtype == static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP) ||
                  mtype == static_cast<uint32_t>(MessageType::GROUP_CHAT_RSP)) &&
                 msg.sender_id() != user_id_) {
                 std::string kind = (mtype == static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP))
                                        ? "[私聊]" : "[群聊]";
-                notifications_.push_back(kind + " 来自 user=" +
-                                          std::to_string(msg.sender_id()) +
-                                          " group=" + std::to_string(msg.group_id()));
+                std::string sender_name;
+                std::string content;
+                if (mtype == static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP) &&
+                    msg.has_private_chat_rsp()) {
+                    sender_name = msg.private_chat_rsp().sender_name();
+                    content = msg.private_chat_rsp().content();
+                } else if (mtype == static_cast<uint32_t>(MessageType::GROUP_CHAT_RSP) &&
+                           msg.has_group_chat_rsp()) {
+                    sender_name = msg.group_chat_rsp().sender_name();
+                    content = msg.group_chat_rsp().content();
+                }
+                if (sender_name.empty()) sender_name = std::to_string(msg.sender_id());
+                notifications_.push_back(kind + " " + sender_name + ": " + content);
                 return;
             }
 
@@ -1084,6 +1144,7 @@ private:
 
     std::vector<chatroom::FriendInfo> friend_cache_;
     std::vector<chatroom::GroupInfo> group_cache_;
+    std::vector<uint64_t> pending_transfers_;  // 待处理的文件传输 ID
 };
 
 
@@ -1309,22 +1370,32 @@ void menu_chat(ChatClient& client) {
 void menu_file(ChatClient& client) {
     while (client.is_connected() && client.is_logged_in()) {
         print_header("文件传输");
-        std::cout << "  1. 上传文件" << std::endl;
-        std::cout << "  2. 下载文件" << std::endl;
+        std::cout << "  1. 发送文件给用户" << std::endl;
+        std::cout << "  2. 接收待处理文件" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
         int choice = read_choice(2);
         switch (choice) {
             case 0: return;
             case 1: {
+                uint64_t uid = read_uint64("  请输入对方 user_id: ");
                 std::string path = read_line("  文件路径: ");
-                client.upload_file(path);
+                client.send_file_to_user(uid, path);
                 break;
             }
             case 2: {
-                uint64_t fid = read_uint64("  请输入 file_id: ");
-                std::string path = read_line("  保存路径: ");
-                client.download_file(fid, path);
+                client.flush_notifications();
+                uint64_t tid = read_uint64("  请输入 transfer_id (0=取消): ");
+                if (tid == 0) break;
+                std::string yn = read_line("  是否接受? (y/n): ");
+                if (yn != "y" && yn != "Y") {
+                    client.accept_transfer(tid, false);
+                    break;
+                }
+                if (client.accept_transfer(tid, true)) {
+                    std::string save = read_line("  保存路径 (回车=默认): ");
+                    client.receive_file_chunks(tid, save);
+                }
                 break;
             }
         }

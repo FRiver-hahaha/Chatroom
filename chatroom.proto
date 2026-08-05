@@ -73,19 +73,18 @@ message ChatMessage {
         FriendOpRequest       query_blocked_req   = 70;
         FriendListResponse    query_blocked_rsp   = 71;
 
-        // --- 文件模块 400-499 ---
-        FileTransfer          file_upload_req     = 60;
-        FileResponse          file_upload_rsp     = 61;
-        FileRequest           file_download_req   = 62;
-        FileResponse          file_download_rsp   = 63;
-        FileTransfer          file_upload_chunk_req = 64;
-        FileResponse          file_upload_chunk_rsp = 65;
-        FileStatusRequest     file_upload_status_req = 66;
-        FileStatusResponse    file_upload_status_rsp = 67;
-        FileDownloadChunkRequest  file_download_chunk_req = 68;
-        FileTransfer          file_download_chunk_rsp = 69;
-        FileListIncompleteRequest  file_list_incomplete_req = 70;
-        FileListIncompleteResponse file_list_incomplete_rsp = 71;
+        // --- 文件发送模块 420-439 ---
+        FileSendRequest        file_send_req        = 80;
+        FileSendResponse       file_send_rsp        = 81;
+        FileTransfer           file_send_chunk_req  = 82;
+        FileResponse           file_send_chunk_rsp  = 83;
+        FileTransferNotify     file_transfer_notify = 84;
+        FileTransferAcceptRequest  file_transfer_accept_req  = 85;
+        FileTransferAcceptResponse file_transfer_accept_rsp  = 86;
+        FileReceiveChunkRequest    file_receive_chunk_req    = 87;
+        FileTransfer               file_receive_chunk_rsp    = 88;
+        FileTransferStatusRequest  file_transfer_status_req  = 89;
+        FileTransferStatusResponse file_transfer_status_rsp  = 90;
     }
 }
 
@@ -228,6 +227,8 @@ message ChatContent {
 message ChatResponse {
     bool   success        = 1;
     string error_message  = 2;
+    string content        = 3;  // 消息正文（转发时使用）
+    string sender_name    = 4;  // 发送者用户名（转发时使用）
 }
 
 message HistoryRequest {
@@ -261,10 +262,7 @@ message FileTransfer {
     bytes  file_data = 3;  // 文件内容（小文件直接内嵌）
     uint32 chunk_seq = 4;  // 断点续传分片序号（0 = 完整文件）
     uint32 total_chunks = 5;
-}
-
-message FileRequest {
-    uint64 file_id = 1;
+    bytes  chunk_hash = 6; // SHA-256 of file_data (32 bytes)
 }
 
 message FileResponse {
@@ -273,44 +271,63 @@ message FileResponse {
     uint64 file_id        = 3;
     string file_name      = 4;
     uint64 file_size      = 5;
-    bytes  file_data      = 6;  // 下载时的文件内容
+    bytes  file_data      = 6;
 }
 
-// 查询上传进度（断点续传入口）
-message FileStatusRequest {
+// ============================================================
+// 文件发送模块 (420-439)
+// ============================================================
+
+message FileSendRequest {
     string file_name = 1;
     uint64 file_size = 2;
-}
-
-// 返回上传进度
-message FileStatusResponse {
-    bool   success        = 1;
-    string error_message  = 2;
-    uint64 file_id        = 3;  // 已完成的文件 ID；0 表示尚未完成
-    uint32 total_chunks   = 4;
-    repeated uint32 received_chunks = 5;  // 已收到的分片序号
-}
-
-// 请求下载指定分片
-message FileDownloadChunkRequest {
-    uint64 file_id   = 1;
-    uint32 chunk_seq = 2;
-}
-
-// 查询未完成的上传（断点续传列表）
-message FileListIncompleteRequest {
-    // 空请求，使用 envelope 中的 sender_id
-}
-
-message FileListIncompleteResponse {
-    bool   success        = 1;
-    string error_message  = 2;
-    repeated IncompleteFileInfo files = 3;
-}
-
-message IncompleteFileInfo {
-    string file_name   = 1;
-    uint64 file_size   = 2;
     uint32 total_chunks = 3;
-    uint32 received_count = 4;  // 已收到的分片数
+    bytes  file_hash = 4;  // SHA-256 of complete file (32 bytes)
+}
+
+message FileSendResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    uint64 transfer_id    = 3;
+}
+
+message FileTransferNotify {
+    uint64 transfer_id  = 1;
+    uint64 sender_id    = 2;
+    string sender_name  = 3;
+    string file_name    = 4;
+    uint64 file_size    = 5;
+    uint32 total_chunks = 6;
+    bytes  file_hash    = 7;  // SHA-256 of complete file (32 bytes)
+}
+
+message FileTransferAcceptRequest {
+    uint64 transfer_id = 1;
+    bool   accept      = 2;
+}
+
+message FileTransferAcceptResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+}
+
+message FileReceiveChunkRequest {
+    uint64 transfer_id = 1;
+    uint32 chunk_seq   = 2;
+}
+
+message FileTransferStatusRequest {
+    uint64 transfer_id = 1;
+}
+
+message FileTransferStatusResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    string file_name      = 3;
+    uint64 file_size      = 4;
+    uint32 total_chunks   = 5;
+    repeated uint32 sender_received_chunks = 6;    // A 已上传的分片
+    repeated uint32 receiver_received_chunks = 7;  // B 已接收的分片
+    string status         = 8;  // "sending" | "completed" | "rejected"
+    bytes  file_hash      = 9;  // SHA-256 of complete file (32 bytes)
 }

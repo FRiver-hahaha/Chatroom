@@ -58,6 +58,27 @@ int main() {
 
         if (msg.type == MessageType::LOGIN_REQ && result.success) {
             server.register_user_fd(conn->user_id, conn->fd);
+            // 通知待处理的文件传输
+            auto pending = storage->get_pending_transfers(result.user_id);
+            for (auto& t : pending) {
+                chatroom::ChatMessage notify;
+                notify.set_type(static_cast<uint32_t>(MessageType::FILE_TRANSFER_NOTIFY));
+                notify.set_sender_id(t.sender_id);
+                notify.set_target_id(result.user_id);
+                auto* nb = notify.mutable_file_transfer_notify();
+                nb->set_transfer_id(t.transfer_id);
+                nb->set_sender_id(t.sender_id);
+                auto sender_info = storage->get_user_by_id(t.sender_id);
+                nb->set_sender_name(sender_info.success ? sender_info.username : std::to_string(t.sender_id));
+                nb->set_file_name(t.file_name);
+                nb->set_file_size(t.file_size);
+                nb->set_total_chunks(t.total_chunks);
+                if (!t.file_hash.empty())
+                    nb->set_file_hash(t.file_hash);
+                std::string s;
+                notify.SerializeToString(&s);
+                server.send_to_async(conn->fd, s);
+            }
         }
         if (msg.type == MessageType::LOGOUT_REQ || msg.type == MessageType::DELETE_ACCOUNT_REQ) {
             server.unregister_user_fd(conn->user_id);
