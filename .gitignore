@@ -15,7 +15,19 @@ errorlog.md
 *.pb.cc
 *.pb.h
 
+# 链接库
+*.a
+*.so
+*.dylib
+*.dll
+
 # 临时文件
 *.swp
 *.swo
 *~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+core
+*.core

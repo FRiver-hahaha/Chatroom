@@ -473,6 +473,20 @@ public:
         return handle_group_op_resp(resp, "退出群组");
     }
 
+    bool dismiss_group(uint64_t gid) {
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::DISMISS_GROUP_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_group_id(gid);
+        msg.set_timestamp(time(nullptr));
+        msg.mutable_dismiss_group_req()->set_group_id(gid);
+
+        if (!send_message(msg)) return false;
+        auto resp = wait_response(MessageType::DISMISS_GROUP_RSP);
+        return handle_group_op_resp(resp, "解散群组");
+    }
+
     void query_group_list() {
         chatroom::ChatMessage msg;
         msg.set_type(static_cast<uint32_t>(MessageType::QUERY_GROUP_LIST_REQ));
@@ -1265,9 +1279,10 @@ void menu_group(ChatClient& client) {
         std::cout << "  8. 批准加入" << std::endl;
         std::cout << "  9. 移除成员" << std::endl;
         std::cout << "  10. 拒绝加入" << std::endl;
+        std::cout << "  11. 解散群组" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(10);
+        int choice = read_choice(11);
         switch (choice) {
             case 0: return;
             case 1: client.query_group_list(); break;
@@ -1321,6 +1336,11 @@ void menu_group(ChatClient& client) {
                 uint64_t gid = read_uint64("  请输入 group_id: ");
                 uint64_t uid = read_uint64("  请输入目标 user_id: ");
                 client.reject_join_group(gid, uid);
+                break;
+            }
+            case 11: {
+                uint64_t gid = read_uint64("  请输入 group_id: ");
+                client.dismiss_group(gid);
                 break;
             }
         }

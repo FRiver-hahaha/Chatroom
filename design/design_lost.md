@@ -8,8 +8,6 @@ Java：JUnit、Log4j/Log4j2 等。
 
 实现图形化界面（超级提高）
 
-实现 TLS 通信加密 (提高)
-
 C/S 双端均支持在 CLI/Web 自行指定 IP:Port
 
 撰写用户文档

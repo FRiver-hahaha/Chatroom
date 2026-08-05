@@ -112,7 +112,7 @@ private:
     void dispatch_group(Connection* conn, const Message& msg, const QueryResult& result) {
         switch (msg.type) {
             case MessageType::CREATE_GROUP_REQ:          send_rsp(conn, msg, result); break;
-            case MessageType::DISMISS_GROUP_REQ:         send_rsp(conn, msg, result); break;
+            case MessageType::DISMISS_GROUP_REQ:         handle_dismiss_group(conn, msg, result); break;
             case MessageType::JOIN_GROUP_REQ:            handle_join_group(conn, msg, result); break;
             case MessageType::QUIT_GROUP_REQ:            send_rsp(conn, msg, result); break;
             case MessageType::QUERY_GROUP_LIST_REQ:      send_rsp(conn, msg, result); break;
@@ -152,6 +152,15 @@ private:
         send_rsp(conn, msg, result);
         if (result.success && msg.target_id != 0)
             notify_target(msg.target_id, "[系统通知] 你加入群组 " + std::to_string(msg.group_id) + " 的请求已被拒绝");
+    }
+
+    void handle_dismiss_group(Connection* conn, const Message& msg, const QueryResult& result) {
+        send_rsp(conn, msg, result);
+        if (!result.success || result.group_members.empty()) return;
+        for (const auto& m : result.group_members) {
+            if (m.user_id == conn->user_id) continue;
+            notify_target(m.user_id, "[系统通知] 群组 " + std::to_string(result.group_id) + " 已被群主解散");
+        }
     }
 
     // ===== Chat =====
