@@ -225,10 +225,13 @@ private:
     QueryResult handle_dismiss_group_query(const Message& msg) {
         QueryResult r;
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
-        r.group_members = storage_->get_group_members(gid);
         r.group_id = gid;
+        r.group_members = storage_->get_group_members(gid);
         r.success = storage_->dismiss_group(gid, msg.sender_id);
-        if (!r.success) r.error_message = "解散群组失败";
+        if (!r.success) {
+            r.error_message = "解散群组失败";
+            r.group_members.clear();
+        }
         return r;
     }
 
