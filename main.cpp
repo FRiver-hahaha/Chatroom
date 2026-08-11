@@ -1,6 +1,7 @@
 #include "network/server.hpp"
 #include <iostream>
 #include <csignal>
+#include <cstdlib>
 
 using namespace chatroom;
 
@@ -13,9 +14,18 @@ void signal_handler(int sig) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+
+    std::string bind_host = "0.0.0.0";
+    int port = 8080;
+    if (argc >= 3) bind_host = argv[1];
+    if (argc >= 2) port = std::atoi(argv[argc >= 3 ? 2 : 1]);
+    if (port <= 0 || port > 65535) {
+        std::cerr << "[Main] 无效端口: " << port << std::endl;
+        return 1;
+    }
 
     auto storage = std::make_shared<StorageManager>();
     if (!storage->connect("localhost", "chatroom", "Chatroom@2026#Secure", "chatroom")) {
@@ -81,7 +91,8 @@ int main() {
             }
         }
         if (msg.type == MessageType::LOGOUT_REQ || msg.type == MessageType::DELETE_ACCOUNT_REQ) {
-            server.unregister_user_fd(conn->user_id);
+            // dispatcher 已把 conn->user_id 清零，用发送方 ID 注销 fd 映射
+            if (msg.sender_id != 0) server.unregister_user_fd(msg.sender_id);
         }
     });
 
@@ -96,14 +107,14 @@ int main() {
         }
     });
 
-    if (!server.start(8080)) {
+    if (!server.start(bind_host, port)) {
         std::cerr << "服务器启动失败" << std::endl;
         return 1;
     }
 
     std::cout << "========================================" << std::endl;
     std::cout << "  ChatRoom 服务器已启动" << std::endl;
-    std::cout << "  端口: 8080" << std::endl;
+    std::cout << "  监听地址: " << bind_host << ":" << port << std::endl;
     std::cout << "  按 Ctrl+C 停止" << std::endl;
     std::cout << "========================================" << std::endl;
 

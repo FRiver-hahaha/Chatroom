@@ -122,11 +122,14 @@ private:
 
     QueryResult handle_logout_query(SessionState, const Message& msg) {
         if (!storage_) return fail("存储服务未就绪");
+        QueryResult r;
+        r.success = true;
         if (msg.sender_id != 0) {
+            r.friend_list = storage_->get_friends(msg.sender_id);
             storage_->clear_session(msg.sender_id);
             storage_->set_offline(msg.sender_id);
         }
-        return {true, "", 0, "", "", false};
+        return r;
     }
 
     QueryResult handle_verify_code_query(SessionState, const Message&) {

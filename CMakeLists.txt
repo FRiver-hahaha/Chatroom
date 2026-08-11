@@ -92,3 +92,12 @@ target_compile_options(client PRIVATE
     -Wextra
     -Wpedantic
 )
+
+# ===== Qt 客户端（需要 Qt6）=====
+find_package(Qt6 QUIET COMPONENTS Widgets Network Core)
+if(Qt6_FOUND)
+    add_subdirectory(qt-client)
+    message(STATUS "Qt6 found — building qt-client")
+else()
+    message(STATUS "Qt6 not found — skipping qt-client")
+endif()

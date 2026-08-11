@@ -117,7 +117,7 @@ public:
     void set_on_close(std::function<void(Connection*)> cb) { on_close_ = std::move(cb); }
     void set_storage(std::shared_ptr<StorageManager> s) { storage_ = std::move(s); }
     
-    bool start(int port);
+    bool start(const std::string& host, int port);
     void run();
     void stop();
     
@@ -148,7 +148,7 @@ public:
 
 private:
     bool init_uring();
-    bool init_socket(int port);
+    bool init_socket(const std::string& host, int port);
     
     void submit_accept();
     void submit_recv(Connection* conn);

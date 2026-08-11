@@ -89,12 +89,17 @@ client/           — standalone CLI client with interactive menus
 
 ```bash
 # Server (needs MySQL + Redis running)
-./build/server
-# Default port: 8080. Hardcoded DB creds in main.cpp:4-5.
+./build/server                    # default 0.0.0.0:8080
+./build/server [bind_ip] [port]   # e.g. ./build/server 127.0.0.1 9090 (single arg = port)
+# Hardcoded DB creds in main.cpp.
 
 # CLI client
-./build/client [host] [port]
+./build/client [host] [port]      # default 127.0.0.1:8080
 # Interactive menu-driven: login → friend/group/chat/file sub-menus.
+
+# Qt client (GUI)
+./build/qt-client/qt-client [-H host] [-P port]   # defaults 127.0.0.1:8080
+# Server address is also editable in the login window.
 
 # DB inspection tool
 ./scripts/dump_db.sh          # all users

@@ -99,7 +99,7 @@ bool StorageManager::connect(const std::string& mysql_host, const std::string& m
         if (redis_ctx_) { redisFree(redis_ctx_); redis_ctx_ = nullptr; }
         return false;
     }
-    // 创建 file_transfers 表（如果不存在）
+    redis_del("chatroom:online");
     {
         MYSQL* conn = mysql_pool_->acquire();
         if (conn) {

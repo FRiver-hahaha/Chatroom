@@ -61,7 +61,7 @@ private:
         switch (msg.type) {
             case MessageType::LOGIN_REQ:          handle_login(conn, msg, result); break;
             case MessageType::REGISTER_REQ:       send_rsp(conn, msg, result); break;
-            case MessageType::LOGOUT_REQ:         send_rsp_and_logout(conn, msg, result); break;
+            case MessageType::LOGOUT_REQ:         handle_logout(conn, msg, result); break;
             case MessageType::DELETE_ACCOUNT_REQ: send_rsp_and_logout(conn, msg, result); break;
             default: break;
         }
@@ -86,6 +86,17 @@ private:
         for (const auto& f : result.friend_list) {
             if (f.is_online)
                 notify_target(f.user_id, "[系统通知] 好友 " + conn->username + " 上线了");
+        }
+    }
+
+    void handle_logout(Connection* conn, const Message& msg, const QueryResult& result) {
+        std::string username = conn->username;
+        send_rsp_and_logout(conn, msg, result);
+        if (!result.success || username.empty()) return;
+        // offline notification to friends
+        for (const auto& f : result.friend_list) {
+            if (f.is_online)
+                notify_target(f.user_id, "[系统通知] 好友 " + username + " 下线了");
         }
     }
 

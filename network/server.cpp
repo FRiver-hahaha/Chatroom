@@ -21,19 +21,19 @@ Server::~Server() {
     }
 }
 
-bool Server::start(int port) {
+bool Server::start(const std::string& host, int port) {
     if (!init_uring()) {
         std::cerr << "[Server] Failed to init io_uring" << std::endl;
         return false;
     }
-    if (!init_socket(port)) {
+    if (!init_socket(host, port)) {
         std::cerr << "[Server] Failed to init listen socket" << std::endl;
         return false;
     }
     submit_accept();
     submit_timeout();
 
-    std::cout << "[Server] Started on port " << port << std::endl;
+    std::cout << "[Server] Started on " << host << ":" << port << std::endl;
     return true;
 }
 
@@ -70,6 +70,9 @@ void Server::stop() {
     io_uring_queue_exit(&ring_);
 
     for (auto& [fd, conn] : conns_) {
+        if (conn->user_id != 0 && on_close_) {
+            on_close_(conn.get());
+        }
         close(fd);
     }
     conns_.clear();
@@ -172,7 +175,7 @@ bool Server::init_uring() {
     return true;
 }
 
-bool Server::init_socket(int port) {
+bool Server::init_socket(const std::string& host, int port) {
     listen_fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (listen_fd_ < 0) {
         perror("socket");
@@ -189,6 +192,10 @@ bool Server::init_socket(int port) {
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
+    if (!host.empty() && host != "0.0.0.0" && inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        std::cerr << "[Server] Invalid bind address '" << host << "', falling back to 0.0.0.0" << std::endl;
+        addr.sin_addr.s_addr = INADDR_ANY;
+    }
     addr.sin_port = htons(port);
 
     if (bind(listen_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
@@ -203,7 +210,9 @@ bool Server::init_socket(int port) {
         return false;
     }
 
-    std::cout << "[Server] Listening on port " << port << std::endl;
+    char bind_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr.sin_addr, bind_str, sizeof(bind_str));
+    std::cout << "[Server] Listening on " << bind_str << ":" << port << std::endl;
     return true;
 }
 
