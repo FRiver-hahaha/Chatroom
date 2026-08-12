@@ -1,14 +1,17 @@
 #include "ClientState.h"
+#include "state/MessageStore.h"
 #include "network/ProtocolClient.h"
 #include "service/MessageType.hpp"
 #include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
+#include <QSet>
 #include <QTimer>
 #include <openssl/sha.h>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <cstdlib>
 
 using chatroom::MessageType;
 
@@ -23,12 +26,15 @@ static QString sha256Hex(const QByteArray &data) {
         oss << std::setw(2) << static_cast<int>(hash[i]);
     return QString::fromStdString(oss.str());
 }
-
 ClientState::ClientState(QObject *parent)
-    : QObject(parent) {
+    : QObject(parent)
+{
     refresh_timer_ = new QTimer(this);
     refresh_timer_->setInterval(30000);
     connect(refresh_timer_, &QTimer::timeout, this, &ClientState::refreshContacts);
+
+    login_timeout_timer_ = new QTimer(this);
+    connect(login_timeout_timer_, &QTimer::timeout, this, &ClientState::onLoginTimeout);
 }
 
 void ClientState::refreshContacts() {
@@ -74,6 +80,7 @@ void ClientState::login(const QString &username, const QString &password) {
         body->set_username(username.toStdString());
         body->set_password(password.toStdString());
     });
+    login_timeout_timer_->start(LoginTimeoutMs);
 }
 
 void ClientState::registerUser(const QString &username, const QString &password, const QString &nickname) {
@@ -85,6 +92,15 @@ void ClientState::registerUser(const QString &username, const QString &password,
         body->set_password(password.toStdString());
         body->set_nickname(nickname.toStdString());
     });
+    pending_nickname_ = nickname;
+    login_timeout_timer_->start(LoginTimeoutMs);
+}
+
+void ClientState::onLoginTimeout() {
+    if (login_timeout_timer_->isActive()) {
+        login_timeout_timer_->stop();
+    }
+    emit loginResult(false, "登录超时，请检查服务器地址和端口");
 }
 
 void ClientState::logout() {
@@ -148,6 +164,9 @@ void ClientState::deleteFriend(uint64_t targetUserId) {
                     [targetUserId](const ContactItem &c) {
                         return c.type == ContactItem::Friend && c.id == targetUserId;
                     }), contacts_.end());
+                if (current_chat_type_ == ChatType::Private && current_target_id_ == targetUserId)
+                    current_messages_.clear();
+                MessageStore::instance()->clearChat(false, targetUserId, 0);
                 emit contactsUpdated();
             }
             emit operationResult(msg.delete_friend_rsp().success(),
@@ -226,6 +245,9 @@ void ClientState::quitGroup(uint64_t groupId) {
                     [groupId](const ContactItem &c) {
                         return c.type == ContactItem::Group && c.group_id == groupId;
                     }), contacts_.end());
+                if (current_chat_type_ == ChatType::Group && current_group_id_ == groupId)
+                    current_messages_.clear();
+                MessageStore::instance()->clearChat(true, 0, groupId);
                 emit contactsUpdated();
             }
             emit operationResult(msg.quit_group_rsp().success(),
@@ -331,7 +353,6 @@ void ClientState::rejectJoinGroup(uint64_t groupId, uint64_t targetUserId) {
 // ===== chat =====
 
 void ClientState::sendPrivateChat(uint64_t targetId, const QString &text) {
-    // add optimistic message
     MessageItem item;
     item.sender_id = user_id_;
     item.sender_name = nickname_.isEmpty() ? username_ : nickname_;
@@ -347,6 +368,7 @@ void ClientState::sendPrivateChat(uint64_t targetId, const QString &text) {
         m.set_target_id(targetId);
         m.mutable_private_chat_req()->set_payload(text.toStdString());
     });
+    MessageStore::instance()->storeMessage(item, false, targetId, 0);
 }
 
 void ClientState::sendGroupChat(uint64_t groupId, const QString &text) {
@@ -365,6 +387,7 @@ void ClientState::sendGroupChat(uint64_t groupId, const QString &text) {
         m.set_group_id(groupId);
         m.mutable_group_chat_req()->set_payload(text.toStdString());
     });
+    MessageStore::instance()->storeMessage(item, true, 0, groupId);
 }
 
 void ClientState::getHistory(uint64_t targetId, uint64_t groupId, int limit) {
@@ -435,6 +458,10 @@ void ClientState::setCurrentChat(ChatType type, uint64_t targetId, uint64_t grou
     current_target_id_ = targetId;
     current_group_id_ = groupId;
     current_messages_.clear();
+
+    // 先加载本地 SQLite 记录，再向服务端拉取增量
+    current_messages_ = MessageStore::instance()->loadHistory(
+        type == ChatType::Group, targetId, groupId);
     emit currentChatChanged();
 
     if (type == ChatType::Private) {
@@ -516,6 +543,7 @@ void ClientState::handleLoginResponse(const chatroom::ChatMessage &msg) {
         queryFriends();
         queryGroupList();
         refresh_timer_->start();
+        login_timeout_timer_->stop();
     }
     emit loginResult(rsp.success(), QString::fromStdString(rsp.error_message()));
 }
@@ -523,6 +551,13 @@ void ClientState::handleLoginResponse(const chatroom::ChatMessage &msg) {
 void ClientState::handleRegisterResponse(const chatroom::ChatMessage &msg) {
     const auto &rsp = msg.register_rsp();
     emit registerResult(rsp.success(), QString::fromStdString(rsp.error_message()));
+    if (rsp.success()) {
+        user_id_ = rsp.user_id();
+        username_ = QString::fromStdString(rsp.username());
+        nickname_ = pending_nickname_;
+        token_ = QString::fromStdString(rsp.token());
+        refresh_timer_->start();
+    }
 }
 
 void ClientState::handleFriendListResponse(const chatroom::ChatMessage &msg) {
@@ -541,6 +576,7 @@ void ClientState::handleFriendListResponse(const chatroom::ChatMessage &msg) {
         item.name = QString::fromStdString(f.nickname().empty() ? f.username() : f.nickname());
         item.is_online = f.is_online();
         item.add_time = f.add_time();
+        item.streak_days = f.streak_days();
         contacts_.append(item);
     }
     sortContacts();
@@ -576,46 +612,56 @@ void ClientState::handleGroupMembersResponse(const chatroom::ChatMessage &msg) {
     for (const auto &m : rsp.members()) {
         QString name = QString::fromStdString(m.nickname().empty() ? m.username() : m.nickname());
         QString role = QString::fromStdString(m.role());
-        names.append(name + " [" + role + "]");
+        names.append(name + (role.isEmpty() ? "" : " [" + role + "]"));
     }
-    emit operationResult(true, "Members:\n" + names.join("\n"));
+    emit groupMembersReceived(current_group_id_, names);
 }
 
 void ClientState::handleHistoryResponse(const chatroom::ChatMessage &msg) {
     const auto &rsp = msg.get_history_rsp();
     if (!rsp.success()) return;
 
-    // only update if still viewing same chat
-    QStringList newContent;
-    for (const auto &m : rsp.messages()) {
+    // 服务端历史为最新的在前；与本地已有记录去重后前置插入
+    QSet<uint64_t> existing;
+    for (const auto &m : current_messages_) {
+        if (m.message_id != 0) existing.insert(m.message_id);
+    }
+
+    bool isGroup = (current_chat_type_ == ChatType::Group);
+    QVector<MessageItem> history;
+    for (int i = rsp.messages_size() - 1; i >= 0; --i) {
+        const auto &m = rsp.messages(i);
+        if (existing.contains(m.message_id())) continue;
+
+        QString content = QString::fromStdString(m.content());
+        bool isSelf = (m.sender_id() == user_id_);
+
+        // 本地乐观消息（message_id=0，发送时缓存）被服务端确认后，用服务端版本替换
+        for (int j = 0; j < current_messages_.size(); ++j) {
+            const auto &lm = current_messages_[j];
+            if (lm.message_id == 0 && lm.sender_id == m.sender_id() && lm.is_self == isSelf &&
+                lm.content == content &&
+                std::abs(static_cast<int64_t>(lm.timestamp) - static_cast<int64_t>(m.timestamp())) <= 300) {
+                current_messages_.removeAt(j);
+                break;
+            }
+        }
+
         MessageItem item;
         item.message_id = m.message_id();
         item.sender_id = m.sender_id();
         item.sender_name = QString::fromStdString(m.sender_name());
-        item.content = QString::fromStdString(m.content());
+        item.content = content;
         item.timestamp = m.timestamp();
-        item.is_self = (m.sender_id() == user_id_);
+        item.is_self = isSelf;
         item.status = MessageItem::Sent;
         item.msg_type = MessageItem::Text;
-        newContent.append(item.content);
+        history.append(item);
+        MessageStore::instance()->storeMessage(item, isGroup,
+                                               current_target_id_, current_group_id_);
     }
 
-    // Prepend history to current_messages_ (history is newest-first from server)
-    if (!rsp.messages().empty()) {
-        QVector<MessageItem> history;
-        for (int i = rsp.messages_size() - 1; i >= 0; --i) {
-            const auto &m = rsp.messages(i);
-            MessageItem item;
-            item.message_id = m.message_id();
-            item.sender_id = m.sender_id();
-            item.sender_name = QString::fromStdString(m.sender_name());
-            item.content = QString::fromStdString(m.content());
-            item.timestamp = m.timestamp();
-            item.is_self = (m.sender_id() == user_id_);
-            item.status = MessageItem::Sent;
-            item.msg_type = MessageItem::Text;
-            history.append(item);
-        }
+    if (!history.isEmpty()) {
         current_messages_ = history + current_messages_;
     }
 
@@ -639,6 +685,7 @@ void ClientState::handleChatResponse(const chatroom::ChatMessage &msg, bool isPr
             item.status = MessageItem::Sent;
             item.msg_type = MessageItem::Text;
             current_messages_.append(item);
+            MessageStore::instance()->storeMessage(item, false, current_target_id_, 0);
             emit messagesUpdated();
         }
         emit incomingMessage(msg.sender_id(), senderName, content);
@@ -653,6 +700,7 @@ void ClientState::handleChatResponse(const chatroom::ChatMessage &msg, bool isPr
             item.status = MessageItem::Sent;
             item.msg_type = MessageItem::Text;
             current_messages_.append(item);
+            MessageStore::instance()->storeMessage(item, true, 0, current_group_id_);
             emit messagesUpdated();
         }
         emit groupMessageReceived(msg.group_id(), msg.sender_id(), senderName, content);

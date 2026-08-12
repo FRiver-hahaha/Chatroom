@@ -31,6 +31,17 @@ pkg_check_modules(MYSQLCLIENT REQUIRED mysqlclient)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
+# ===== Glog (日志库，外部依赖，FetchContent 自动构建) =====
+include(FetchContent)
+FetchContent_Declare(
+    glog
+    GIT_REPOSITORY https://github.com/google/glog.git
+    GIT_TAG v0.7.1
+)
+set(WITH_GFLAGS OFF CACHE BOOL "Disable gflags for glog")
+set(WITH_UNWIND OFF CACHE BOOL "Disable unwinding support for glog")
+FetchContent_MakeAvailable(glog)
+
 # ===== lib: 客户端网络库（已移除 — client 为自包含单文件）=====
 
 # ===== Server executable =====
@@ -59,6 +70,7 @@ target_link_libraries(server PRIVATE
     ${MYSQLCLIENT_LIBRARIES}
     OpenSSL::Crypto
     Threads::Threads
+    glog::glog
 )
 
 target_compile_options(server PRIVATE
@@ -94,7 +106,7 @@ target_compile_options(client PRIVATE
 )
 
 # ===== Qt 客户端（需要 Qt6）=====
-find_package(Qt6 QUIET COMPONENTS Widgets Network Core)
+find_package(Qt6 QUIET COMPONENTS Widgets Network Core Sql)
 if(Qt6_FOUND)
     add_subdirectory(qt-client)
     message(STATUS "Qt6 found — building qt-client")

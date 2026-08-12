@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "widgets/ChatInputBar.h"
 #include "widgets/ChatBubble.h"
+#include "widgets/ChatMessageDelegate.h"
 #include "widgets/InfoPanel.h"
 #include "widgets/FunctionBar.h"
 #include "dialogs/AddFriendDialog.h"
@@ -8,9 +9,6 @@
 #include "dialogs/CreateGroupDialog.h"
 #include "dialogs/JoinGroupDialog.h"
 #include "dialogs/EditProfileDialog.h"
-#include "dialogs/GameDialog.h"
-#include "util/ConfettiOverlay.h"
-#include "util/BombOverlay.h"
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QVBoxLayout>
@@ -34,8 +32,7 @@ void MainWindow::setupUi() {
 
     // menu bar
     auto *menuBar = this->menuBar();
-    auto *momentsAction = menuBar->addAction("朋友圈");
-    connect(momentsAction, &QAction::triggered, this, &MainWindow::momentsClicked);
+    Q_UNUSED(menuBar)
 
     // central widget
     auto *central = new QWidget();
@@ -74,9 +71,11 @@ void MainWindow::setupUi() {
     message_list_->setModel(message_model_);
     message_list_->setSelectionMode(QAbstractItemView::NoSelection);
     message_list_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    message_list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    message_list_->setWordWrap(true);
     message_list_->setStyleSheet(
         "QListView { background-color: #f5f5f5; border: none; }");
-    message_list_->setWordWrap(true);
+    message_list_->setItemDelegate(new ChatMessageDelegate(message_list_));
     centerLayout->addWidget(message_list_, 1);
 
     input_bar_ = new ChatInputBar();
@@ -104,10 +103,6 @@ void MainWindow::setupUi() {
     main_splitter_->setStretchFactor(2, 2);
 
     centralLayout->addWidget(main_splitter_);
-
-    // overlays
-    confetti_ = new ConfettiOverlay(this);
-    bomb_ = new BombOverlay(this);
 }
 
 void MainWindow::setupConnections() {
@@ -117,7 +112,6 @@ void MainWindow::setupConnections() {
 
     connect(input_bar_, &ChatInputBar::sendClicked, this, &MainWindow::onSendMessage);
     connect(input_bar_, &ChatInputBar::fileUploadClicked, this, &MainWindow::onFileUpload);
-    connect(input_bar_, &ChatInputBar::gameClicked, this, &MainWindow::onGameClicked);
     connect(input_bar_, &ChatInputBar::loadHistoryClicked, this, &MainWindow::onLoadHistory);
 
     connect(state, &ClientState::contactsUpdated, this, &MainWindow::onContactsUpdated);
@@ -125,6 +119,7 @@ void MainWindow::setupConnections() {
     connect(state, &ClientState::currentChatChanged, this, &MainWindow::onChatChanged);
     connect(state, &ClientState::systemNotification, this, &MainWindow::onSystemNotification);
     connect(state, &ClientState::incomingMessage, this, &MainWindow::onIncomingMessage);
+    connect(state, &ClientState::groupMembersReceived, this, &MainWindow::onGroupMembersReceived);
 
     // function bar
     connect(function_bar_, &FunctionBar::addFriendClicked, this, &MainWindow::onAddFriend);
@@ -179,7 +174,16 @@ void MainWindow::onContactsUpdated() {
 }
 
 void MainWindow::onMessagesUpdated() {
-    message_model_->setMessages(ClientState::instance()->currentChatMessages());
+    auto *state = ClientState::instance();
+    const auto &msgs = state->currentChatMessages();
+
+    // 增量追加，避免全量 reset 造成滚动抖动，保证流畅体验
+    if (msgs.size() >= message_model_->rowCount()) {
+        for (int i = message_model_->rowCount(); i < msgs.size(); ++i)
+            message_model_->appendMessage(msgs[i]);
+    } else {
+        message_model_->setMessages(msgs);
+    }
     // scroll to bottom
     message_list_->scrollToBottom();
 }
@@ -246,50 +250,12 @@ void MainWindow::onFileUpload() {
     state->sendFileRequest(state->currentTargetId(), filePath);
 }
 
-void MainWindow::onGameClicked() {
-    auto *dlg = new GameDialog(this);
-    connect(dlg, &GameDialog::gameMove, this, &MainWindow::onGameMove);
-    dlg->exec();
-    dlg->deleteLater();
-}
-
 void MainWindow::onLoadHistory() {
     auto *state = ClientState::instance();
     if (state->currentChatType() == ChatType::Private) {
         state->getHistory(state->currentTargetId(), 0);
     } else {
         state->getHistory(0, state->currentGroupId());
-    }
-}
-
-void MainWindow::onGameMove(const QString &move) {
-    // client-side rock-paper-scissors
-    QStringList moves = {"rock", "scissors", "paper"};
-    int ai = QRandomGenerator::global()->bounded(3);
-    QString aiMove = moves[ai];
-
-    // determine winner: rock > scissors, scissors > paper, paper > rock
-    int playerIdx = moves.indexOf(move);
-    bool playerWins = (playerIdx == 0 && ai == 1) ||  // rock vs scissors
-                      (playerIdx == 1 && ai == 2) ||  // scissors vs paper
-                      (playerIdx == 2 && ai == 0);    // paper vs rock
-    bool tie = (playerIdx == ai);
-
-    QString result;
-    if (tie) {
-        result = "平局!";
-    } else if (playerWins) {
-        result = "你赢了这一局!";
-        confetti_->start();
-    } else {
-        result = "你输了这一局!";
-        bomb_->start();
-    }
-
-    // if the dialog is still open, it will show result
-    auto *dlg = qobject_cast<GameDialog *>(sender());
-    if (dlg) {
-        dlg->showResult(result, playerWins && !tie);
     }
 }
 
@@ -394,6 +360,12 @@ void MainWindow::onQuitGroup() {
 void MainWindow::onViewMembers() {
     auto *state = ClientState::instance();
     state->queryGroupMembers(state->currentGroupId());
+}
+
+void MainWindow::onGroupMembersReceived(uint64_t groupId, const QStringList &members) {
+    Q_UNUSED(groupId)
+    info_panel_->showGroupMembers(members);
+    right_stack_->setCurrentWidget(info_panel_);
 }
 
 void MainWindow::onDismissGroup() {

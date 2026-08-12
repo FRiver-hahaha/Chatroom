@@ -42,7 +42,7 @@ class MessageDispatcher;
 struct Connection {
     // ===== 传输层 =====
     int fd;
-    char buffer[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE];// 缓冲池接口
     std::vector<std::string> send_queue;
     bool sending = false;
     std::chrono::steady_clock::time_point last_active;

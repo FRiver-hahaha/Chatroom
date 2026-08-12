@@ -85,6 +85,7 @@ public:
     bool is_blocked_by(uint64_t user_id, uint64_t friend_id);
     std::vector<QueryResult::FriendInfo> get_friends(uint64_t user_id);
     std::vector<QueryResult::FriendInfo> get_blocked_users(uint64_t user_id);
+    uint64_t get_streak_days(uint64_t user_id, uint64_t peer_id);
 
     // 群组模块
     uint64_t create_group(const std::string& group_name,

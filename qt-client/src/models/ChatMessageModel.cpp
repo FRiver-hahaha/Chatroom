@@ -31,6 +31,8 @@ QVariant ChatMessageModel::data(const QModelIndex &index, int role) const {
         return msg.file_name;
     case FilePathRole:
         return msg.file_path;
+    case MessageItemRole:
+        return QVariant::fromValue(msg);
     default:
         return {};
     }

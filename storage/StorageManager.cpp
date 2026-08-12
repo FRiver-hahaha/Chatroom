@@ -1,4 +1,5 @@
 #include "StorageManager.hpp"
+#include <glog/logging.h>
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 #include <sstream>
@@ -37,7 +38,7 @@ bool MySQLConnectionPool::init(const std::string& host, const std::string& user,
         pool_.push(conn);
     }
     initialized_ = true;
-    std::cout << "[MySQLPool] Initialized with " << pool_size_ << " connections" << std::endl;
+    LOG(INFO) << "[MySQLPool] Initialized with " << pool_size_ << " connections" ;
     return true;
 }
 
@@ -48,7 +49,7 @@ MYSQL* MySQLConnectionPool::create_connection() {
     if (!mysql_real_connect(conn, conn_info_.host.c_str(), conn_info_.user.c_str(),
                             conn_info_.password.c_str(), conn_info_.database.c_str(),
                             conn_info_.port, nullptr, 0)) {
-        std::cerr << "[MySQLPool] Connection failed: " << mysql_error(conn) << std::endl;
+        LOG(ERROR) << "[MySQLPool] Connection failed: " << mysql_error(conn) ;
         mysql_close(conn);
         return nullptr;
     }
@@ -89,13 +90,13 @@ bool StorageManager::connect(const std::string& mysql_host, const std::string& m
     redis_port_ = redis_port;
     mysql_pool_ = std::make_unique<MySQLConnectionPool>(8);// 初始化
     if (!mysql_pool_->init(mysql_host, mysql_user, mysql_password, mysql_database)) {
-        std::cerr << "[StorageManager] MySQL pool init failed" << std::endl;
+        LOG(ERROR) << "[StorageManager] MySQL pool init failed" ;
         return false;
     }
     redis_ctx_ = redisConnect(redis_host_.c_str(), redis_port_);
     if (!redis_ctx_ || redis_ctx_->err) {
-        std::cerr << "[StorageManager] Redis connection failed: "
-                  << (redis_ctx_ ? redis_ctx_->errstr : "null context") << std::endl;
+        LOG(ERROR) << "[StorageManager] Redis connection failed: "
+                  << (redis_ctx_ ? redis_ctx_->errstr : "null context") ;
         if (redis_ctx_) { redisFree(redis_ctx_); redis_ctx_ = nullptr; }
         return false;
     }
@@ -117,8 +118,8 @@ bool StorageManager::connect(const std::string& mysql_host, const std::string& m
                 ) ENGINE=InnoDB
             )SQL";
             if (mysql_query(conn, create_sql) != 0) {
-                std::cerr << "[StorageManager] CREATE file_transfers failed: "
-                          << mysql_error(conn) << std::endl;
+                LOG(ERROR) << "[StorageManager] CREATE file_transfers failed: "
+                          << mysql_error(conn) ;
             }
             // 兼容旧表：补加 file_hash 列
             mysql_query(conn, "ALTER TABLE file_transfers ADD COLUMN IF NOT EXISTS "
@@ -127,14 +128,14 @@ bool StorageManager::connect(const std::string& mysql_host, const std::string& m
         }
     }
 
-    std::cout << "[StorageManager] Connected to MySQL and Redis" << std::endl;
+    LOG(INFO) << "[StorageManager] Connected to MySQL and Redis" ;
     return true;
 }
 
 void StorageManager::disconnect() {
     if (redis_ctx_) { redisFree(redis_ctx_); redis_ctx_ = nullptr; }
     if (mysql_pool_) { mysql_pool_->close_all(); mysql_pool_.reset(); }
-    std::cout << "[StorageManager] Disconnected" << std::endl;
+    LOG(INFO) << "[StorageManager] Disconnected" ;
 }
 
 bool StorageManager::is_connected() const {
@@ -190,7 +191,7 @@ bool StorageManager::redis_reconnect() {
             if (!_r) { ok = false; break; }                                      \
         }                                                                        \
         ok = (_r->type != REDIS_REPLY_ERROR);                                    \
-        if (!ok) std::cerr << "[Redis] " << _r->str << std::endl;               \
+        if (!ok) LOG(ERROR) << "[Redis] " << _r->str ;               \
         freeReplyObject(_r);                                                     \
     } while (0)
 
@@ -619,11 +620,59 @@ std::vector<QueryResult::FriendInfo> StorageManager::get_friends(uint64_t user_i
         info.is_blocked = row[3] ? (std::stoi(row[3]) != 0) : false;
         info.add_time  = row[4] ? std::stoull(row[4]) : 0;
         info.is_online = is_online(info.user_id);
+        info.streak_days = get_streak_days(user_id, info.user_id);
         result.push_back(info);
     }
     mysql_free_result(res);
     mysql_pool_->release(conn);
     return result;
+}
+
+uint64_t StorageManager::get_streak_days(uint64_t user_id, uint64_t peer_id) {
+    if (user_id == 0 || peer_id == 0) return 0;
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return 0;
+    std::string q = "SELECT DISTINCT DATE(created_at) FROM messages "
+                    "WHERE group_id IS NULL "
+                    "AND ((sender_id=" + std::to_string(user_id) + " AND target_id=" + std::to_string(peer_id) + ") "
+                    "OR (sender_id=" + std::to_string(peer_id) + " AND target_id=" + std::to_string(user_id) + "))";
+    if (mysql_query(conn, q.c_str()) != 0) { mysql_pool_->release(conn); return 0; }
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (!res) { mysql_pool_->release(conn); return 0; }
+
+    auto to_day = [](const std::string& date) -> int64_t {
+        struct tm tm = {};
+        if (!strptime(date.c_str(), "%Y-%m-%d", &tm)) return -1;
+        return static_cast<int64_t>(timegm(&tm)) / 86400;
+    };
+
+    std::vector<int64_t> days;
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(res))) {
+        if (!row[0]) continue;
+        int64_t d = to_day(row[0]);
+        if (d >= 0) days.push_back(d);
+    }
+    mysql_free_result(res);
+    mysql_pool_->release(conn);
+
+    if (days.empty()) return 0;
+    std::sort(days.begin(), days.end());
+    days.erase(std::unique(days.begin(), days.end()), days.end());
+
+    // 从今天(或昨天，若今天还没聊)开始向前统计连续天数
+    time_t now = time(nullptr);
+    struct tm local_tm = *localtime(&now);
+    local_tm.tm_hour = local_tm.tm_min = local_tm.tm_sec = 0;
+    int64_t today = static_cast<int64_t>(timegm(&local_tm)) / 86400;
+    if (days.back() < today) today = days.back();
+
+    uint64_t streak = 0;
+    for (auto it = days.rbegin(); it != days.rend(); ++it) {
+        if (*it == today - static_cast<int64_t>(streak)) ++streak;
+        else break;
+    }
+    return streak;
 }
 
 uint64_t StorageManager::create_group(const std::string& group_name,
@@ -1177,8 +1226,8 @@ uint64_t StorageManager::create_transfer(uint64_t sender_id, uint64_t receiver_i
                    + ef + "', " + std::to_string(file_size) + ", "
                    + std::to_string(total_chunks) + ", '" + efh + "')";
     if (mysql_query(conn, q.c_str()) != 0) {
-        std::cerr << "[StorageManager] create_transfer INSERT failed: "
-                  << mysql_error(conn) << std::endl;
+        LOG(ERROR) << "[StorageManager] create_transfer INSERT failed: "
+                  << mysql_error(conn) ;
         mysql_pool_->release(conn); return 0;
     }
     uint64_t tid = mysql_insert_id(conn);
@@ -1188,8 +1237,8 @@ uint64_t StorageManager::create_transfer(uint64_t sender_id, uint64_t receiver_i
     mkdir(FILE_STORAGE_BASE, 0755);
     std::string dir = std::string(FILE_STORAGE_BASE) + "/transfer_" + std::to_string(tid);
     if (mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
-        std::cerr << "[StorageManager] Failed to create directory: " << dir
-                  << " (errno=" << errno << ")" << std::endl;
+        LOG(ERROR) << "[StorageManager] Failed to create directory: " << dir
+                  << " (errno=" << errno << ")" ;
         return 0;
     }
 

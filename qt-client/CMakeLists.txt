@@ -9,12 +9,12 @@ set(QT_CLIENT_SOURCES
     src/models/ChatMessageModel.cpp
     src/models/ContactListModel.cpp
     src/models/GroupMemberModel.cpp
-    src/models/MomentModel.cpp
     src/state/ClientState.cpp
+    src/state/MessageStore.cpp
     src/ui/LoginWindow.cpp
     src/ui/MainWindow.cpp
-    src/ui/MomentWindow.cpp
     src/ui/widgets/ChatBubble.cpp
+    src/ui/widgets/ChatMessageDelegate.cpp
     src/ui/widgets/ChatInputBar.cpp
     src/ui/widgets/InfoPanel.cpp
     src/ui/widgets/FunctionBar.cpp
@@ -23,9 +23,6 @@ set(QT_CLIENT_SOURCES
     src/ui/dialogs/CreateGroupDialog.cpp
     src/ui/dialogs/JoinGroupDialog.cpp
     src/ui/dialogs/EditProfileDialog.cpp
-    src/ui/dialogs/GameDialog.cpp
-    src/util/ConfettiOverlay.cpp
-    src/util/BombOverlay.cpp
     ${PROTO_SRCS}
 )
 
@@ -46,6 +43,7 @@ target_link_libraries(qt-client PRIVATE
     Qt6::Widgets
     Qt6::Network
     Qt6::Core
+    Qt6::Sql
 )
 
 target_compile_options(qt-client PRIVATE

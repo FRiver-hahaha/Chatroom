@@ -71,14 +71,6 @@ enum class MessageType : uint32_t {
     GET_GROUP_HISTORY_REQ = 306,
     GET_GROUP_HISTORY_RSP = 307,
     OFFLINE_MSG_NOTIFY = 308,
-    
-    // ===== 动态模块 500-599 =====
-    MOMENT_PUBLISH_REQ = 500,
-    MOMENT_PUBLISH_RSP = 501,
-    MOMENT_QUERY_REQ = 502,
-    MOMENT_QUERY_RSP = 503,
-    GAME_START_REQ = 504,
-    GAME_START_RSP = 505,
 
     // ===== 文件发送模块 420-439 =====
     FILE_SEND_REQ = 420,

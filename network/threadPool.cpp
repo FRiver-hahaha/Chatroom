@@ -1,4 +1,5 @@
 #include "threadPool.hpp"
+#include <glog/logging.h>
 /*
     日志处理函数:
     接受字符串参数，打印日志。
@@ -10,7 +11,7 @@ void log(const std::string& msg) {
 
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
-    std::cout << msg << std::endl;
+    LOG(INFO) << msg ;
 }
 
 void log(const std::string& msg, int x) {
@@ -19,7 +20,7 @@ void log(const std::string& msg, int x) {
 
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
-    std::cout << msg;
+    LOG(INFO) << msg;
 }
 
 

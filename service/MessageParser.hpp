@@ -262,6 +262,7 @@ public:
                         info->set_is_online(f.is_online);
                         info->set_is_blocked(f.is_blocked);
                         info->set_add_time(f.add_time);
+                        info->set_streak_days(f.streak_days);
                     }
                 } else {
                     body->set_error_message(result.error_message);

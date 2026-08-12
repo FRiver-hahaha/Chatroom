@@ -1,20 +1,32 @@
 #include "network/server.hpp"
+#include <glog/logging.h>
 #include <iostream>
 #include <csignal>
 #include <cstdlib>
+#include <cerrno>
+#include <sys/stat.h>
 
 using namespace chatroom;
 
 Server* g_server = nullptr;
 
 void signal_handler(int sig) {
-    std::cout << "\n[Main] 收到信号 " << sig << "，正在关闭..." << std::endl;
+    LOG(INFO) << "\n[Main] 收到信号 " << sig << "，正在关闭..." ;
     if (g_server) {
         g_server->stop();
     }
 }
 
 int main(int argc, char* argv[]) {
+    google::InitGoogleLogging(argv[0]);
+    google::InstallFailureSignalHandler();
+    FLAGS_log_dir = "logs";
+    FLAGS_stderrthreshold = 1;
+    if (mkdir("logs", 0755) != 0 && errno != EEXIST) {
+        FLAGS_logtostderr = true;
+    }
+    FLAGS_colorlogtostderr = true;
+
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
@@ -23,13 +35,13 @@ int main(int argc, char* argv[]) {
     if (argc >= 3) bind_host = argv[1];
     if (argc >= 2) port = std::atoi(argv[argc >= 3 ? 2 : 1]);
     if (port <= 0 || port > 65535) {
-        std::cerr << "[Main] 无效端口: " << port << std::endl;
+        LOG(ERROR) << "[Main] 无效端口: " << port ;
         return 1;
     }
 
     auto storage = std::make_shared<StorageManager>();
     if (!storage->connect("localhost", "chatroom", "Chatroom@2026#Secure", "chatroom")) {
-        std::cerr << "[Main] 数据库连接失败，将以 mock 模式运行" << std::endl;
+        LOG(ERROR) << "[Main] 数据库连接失败，将以 mock 模式运行" ;
     }
 
     Server server(4);
@@ -37,38 +49,37 @@ int main(int argc, char* argv[]) {
     server.set_storage(storage);
 
     server.set_on_connect([](Connection* conn) {
-        std::cout << "[Callback] 新连接 fd=" << conn->fd << std::endl;
+        LOG(INFO) << "[Callback] 新连接 fd=" << conn->fd ;
     });
 
     server.set_on_recv([&](Connection* conn, const std::string& data) {
         Message msg;
-        if (!MessageParser::parse(data.data(), static_cast<int>(data.size()), msg)) {
-            std::cerr << "[Pipeline] 消息解析失败" << std::endl;
+        if (!MessageParser::parse(data.data(), static_cast<int>(data.size()), msg)) {// 解析
+            LOG(ERROR) << "[Pipeline] 消息解析失败" ;
             server.send_to_async(conn->fd, "消息解析失败");
             return;
         }
 
-        std::cout << "[Pipeline] 收到消息: " << message_type_name(msg.type)
+        LOG(INFO) << "[Pipeline] 收到消息: " << message_type_name(msg.type)
                   << " 来自 fd=" << conn->fd 
-                  << " user=" << conn->username << std::endl;
+                  << " user=" << conn->username ;
 
         if (!conn->db_queryer_) {
             server.send_to_async(conn->fd, "服务未就绪");
             return;
         }
 
-        auto result = conn->db_queryer_->query(conn->state, msg);
+        auto result = conn->db_queryer_->query(conn->state, msg);// 查询
 
         if (!conn->dispatcher_) {
             server.send_to_async(conn->fd, "服务未就绪");
             return;
         }
 
-        conn->dispatcher_->dispatch(conn, msg, result);
+        conn->dispatcher_->dispatch(conn, msg, result);// 分发
 
         if (msg.type == MessageType::LOGIN_REQ && result.success) {
             server.register_user_fd(conn->user_id, conn->fd);
-            // 通知待处理的文件传输
             auto pending = storage->get_pending_transfers(result.user_id);
             for (auto& t : pending) {
                 chatroom::ChatMessage notify;
@@ -91,7 +102,6 @@ int main(int argc, char* argv[]) {
             }
         }
         if (msg.type == MessageType::LOGOUT_REQ || msg.type == MessageType::DELETE_ACCOUNT_REQ) {
-            // dispatcher 已把 conn->user_id 清零，用发送方 ID 注销 fd 映射
             if (msg.sender_id != 0) server.unregister_user_fd(msg.sender_id);
         }
     });
@@ -100,26 +110,26 @@ int main(int argc, char* argv[]) {
     });
 
     server.set_on_close([&](Connection* conn) {
-        std::cout << "[Callback] 连接 fd=" << conn->fd
-                  << " 已关闭 (user=" << conn->username << ")" << std::endl;
+        LOG(INFO) << "[Callback] 连接 fd=" << conn->fd
+                  << " 已关闭 (user=" << conn->username << ")" ;
         if (conn->user_id != 0) {
             storage->set_offline(conn->user_id);
         }
     });
 
     if (!server.start(bind_host, port)) {
-        std::cerr << "服务器启动失败" << std::endl;
+        LOG(ERROR) << "服务器启动失败" ;
         return 1;
     }
 
-    std::cout << "========================================" << std::endl;
-    std::cout << "  ChatRoom 服务器已启动" << std::endl;
-    std::cout << "  监听地址: " << bind_host << ":" << port << std::endl;
-    std::cout << "  按 Ctrl+C 停止" << std::endl;
-    std::cout << "========================================" << std::endl;
+    LOG(INFO) << "========================================" ;
+    LOG(INFO) << "  ChatRoom 服务器已启动" ;
+    LOG(INFO) << "  监听地址: " << bind_host << ":" << port ;
+    LOG(INFO) << "  按 Ctrl+C 停止" ;
+    LOG(INFO) << "========================================" ;
 
     server.run();
 
-    std::cout << "[Main] 服务器已退出" << std::endl;
+    LOG(INFO) << "[Main] 服务器已退出" ;
     return 0;
 }

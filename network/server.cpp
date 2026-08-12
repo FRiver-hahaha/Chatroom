@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include <glog/logging.h>
 #include <iostream>
 #include <chrono>
 #include <cstring>
@@ -23,17 +24,17 @@ Server::~Server() {
 
 bool Server::start(const std::string& host, int port) {
     if (!init_uring()) {
-        std::cerr << "[Server] Failed to init io_uring" << std::endl;
+        LOG(ERROR) << "[Server] Failed to init io_uring" ;
         return false;
     }
     if (!init_socket(host, port)) {
-        std::cerr << "[Server] Failed to init listen socket" << std::endl;
+        LOG(ERROR) << "[Server] Failed to init listen socket" ;
         return false;
     }
     submit_accept();
     submit_timeout();
 
-    std::cout << "[Server] Started on " << host << ":" << port << std::endl;
+    LOG(INFO) << "[Server] Started on " << host << ":" << port ;
     return true;
 }
 
@@ -43,7 +44,7 @@ void Server::run() {
 
         int ret = io_uring_wait_cqe(&ring_, &cqe);
         if (ret < 0) {
-            std::cerr << "[Server] wait_cqe error: " << -ret << std::endl;
+            LOG(ERROR) << "[Server] wait_cqe error: " << -ret ;
             continue;
         }
 
@@ -76,7 +77,7 @@ void Server::stop() {
         close(fd);
     }
     conns_.clear();
-    std::cout << "[Server] Stopped" << std::endl;
+    LOG(INFO) << "[Server] Stopped" ;
 }
 
 void Server::send_to(Connection* conn, const std::string& data) {
@@ -146,8 +147,8 @@ void Server::close_connection(int fd) {
     close(fd);
     conns_.erase(it);
 
-    std::cout << "[Server] Connection " << fd << " closed, remaining: "
-              << conns_.size() << std::endl;
+    LOG(INFO) << "[Server] Connection " << fd << " closed, remaining: "
+              << conns_.size() ;
 }
 
 bool Server::init_uring() {
@@ -157,17 +158,17 @@ bool Server::init_uring() {
 
     int ret = io_uring_queue_init_params(QUEUE_SIZE, &ring_, &params);
     if (ret < 0) {
-        std::cerr << "[Server] io_uring init failed: " << -ret << std::endl;
+        LOG(ERROR) << "[Server] io_uring init failed: " << -ret ;
         return false;
     }
 
-    std::cout << "[Server] io_uring ready: SQ=" << *ring_.sq.kring_entries
-              << ", CQ=" << *ring_.cq.kring_entries << ", SQPOLL=on" << std::endl;
+    LOG(INFO) << "[Server] io_uring ready: SQ=" << *ring_.sq.kring_entries
+              << ", CQ=" << *ring_.cq.kring_entries << ", SQPOLL=on" ;
 
     // 创建 eventfd 用于唤醒 io_uring 主循环
     wakeup_fd_ = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
     if (wakeup_fd_ < 0) {
-        std::cerr << "[Server] eventfd creation failed: " << strerror(errno) << std::endl;
+        LOG(ERROR) << "[Server] eventfd creation failed: " << strerror(errno) ;
         return false;
     }
     submit_wakeup();
@@ -178,13 +179,13 @@ bool Server::init_uring() {
 bool Server::init_socket(const std::string& host, int port) {
     listen_fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (listen_fd_ < 0) {
-        perror("socket");
+        LOG(ERROR) << "socket: " << strerror(errno);
         return false;
     }
 
     int opt = 1;
     if (setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt");
+        LOG(ERROR) << "setsockopt: " << strerror(errno);
         close(listen_fd_);
         return false;
     }
@@ -193,26 +194,26 @@ bool Server::init_socket(const std::string& host, int port) {
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     if (!host.empty() && host != "0.0.0.0" && inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-        std::cerr << "[Server] Invalid bind address '" << host << "', falling back to 0.0.0.0" << std::endl;
+        LOG(ERROR) << "[Server] Invalid bind address '" << host << "', falling back to 0.0.0.0" ;
         addr.sin_addr.s_addr = INADDR_ANY;
     }
     addr.sin_port = htons(port);
 
     if (bind(listen_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("bind");
+        LOG(ERROR) << "bind: " << strerror(errno);
         close(listen_fd_);
         return false;
     }
 
     if (listen(listen_fd_, 128) < 0) {
-        perror("listen");
+        LOG(ERROR) << "listen: " << strerror(errno);
         close(listen_fd_);
         return false;
     }
 
     char bind_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &addr.sin_addr, bind_str, sizeof(bind_str));
-    std::cout << "[Server] Listening on " << bind_str << ":" << port << std::endl;
+    LOG(INFO) << "[Server] Listening on " << bind_str << ":" << port ;
     return true;
 }
 
@@ -305,7 +306,7 @@ void Server::handle_cqe(struct io_uring_cqe* cqe) {
 }
 
 void Server::handle_accept(int fd) {
-    std::cout << "[Server] New client: fd=" << fd << std::endl;
+    LOG(INFO) << "[Server] New client: fd=" << fd ;
 
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
@@ -329,7 +330,7 @@ void Server::handle_accept(int fd) {
 }
 
 void Server::handle_recv(Connection* conn, int bytes) {
-    std::cout << "[Server] Recv " << bytes << " bytes from fd " << conn->fd << std::endl;
+    LOG(INFO) << "[Server] Recv " << bytes << " bytes from fd " << conn->fd ;
 
     // 追加到接收缓冲区
     conn->recv_buffer.append(conn->buffer, bytes);
@@ -364,7 +365,7 @@ void Server::handle_recv(Connection* conn, int bytes) {
 
                 thread_pool_->submit(
                     [conn_shared, data_str = std::move(message_data), fd, this]() {
-                        std::cout << "[线程池] 处理 " << data_str.size() << " 字节来自 fd " << fd << std::endl;
+                        LOG(INFO) << "[线程池] 处理 " << data_str.size() << " 字节来自 fd " << fd ;
                         if (on_recv_) {
                             on_recv_(conn_shared.get(), data_str);
                         }
@@ -413,7 +414,7 @@ void Server::cleanup_timeout_connections() {
     }
 
     for (int fd : to_remove) {
-        std::cout << "[Server] Connection " << fd << " timed out" << std::endl;
+        LOG(INFO) << "[Server] Connection " << fd << " timed out" ;
         close_connection(fd);
     }
 }

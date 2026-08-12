@@ -59,7 +59,12 @@ void InfoPanel::showContactInfo(const ContactItem &contact) {
         QString detail;
         detail += "用户ID: " + QString::number(contact.id) + "\n";
         detail += "状态: " + QString(contact.is_online ? "在线" : "离线") + "\n";
-        detail += "注册时间: " + QDateTime::fromSecsSinceEpoch(contact.add_time).toString("yyyy-MM-dd");
+        detail += "火花: ";
+        if (contact.streak_days > 0)
+            detail += QString("已连续聊天 %1 天 🔥").arg(contact.streak_days);
+        else
+            detail += "未开始 (每天聊天即可点亮)";
+        detail += "\n注册时间: " + QDateTime::fromSecsSinceEpoch(contact.add_time).toString("yyyy-MM-dd");
         detail_label_->setText(detail);
     } else {
         friend_info_->show();

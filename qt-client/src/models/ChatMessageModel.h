@@ -15,7 +15,8 @@ public:
         StatusRole,
         MsgTypeRole,
         FileNameRole,
-        FilePathRole
+        FilePathRole,
+        MessageItemRole
     };
 
     explicit ChatMessageModel(QObject *parent = nullptr);

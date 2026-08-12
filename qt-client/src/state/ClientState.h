@@ -34,10 +34,14 @@ struct ContactItem {
     bool is_online = false;
     uint64_t last_chat_time = 0;
     uint64_t add_time = 0;
+    uint64_t streak_days = 0; // 续火花天数（仅好友）
     QString role; // only for groups
     uint64_t group_id = 0; // only for groups
     uint64_t owner_id = 0; // only for groups
 };
+
+Q_DECLARE_METATYPE(MessageItem)
+Q_DECLARE_METATYPE(ContactItem)
 
 class ClientState : public QObject {
     Q_OBJECT
@@ -78,6 +82,9 @@ public:
     void sendGroupChat(uint64_t groupId, const QString &text);
     void getHistory(uint64_t targetId, uint64_t groupId, int limit = 50);
 
+    // login timeout (5s)
+    static constexpr int LoginTimeoutMs = 5000;
+
     // file
     void sendFileRequest(uint64_t targetId, const QString &filePath);
     void acceptFileTransfer(uint64_t transferId, bool accept);
@@ -109,6 +116,7 @@ signals:
     void messagesUpdated();
     void incomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
     void groupMessageReceived(uint64_t groupId, uint64_t senderId, const QString &senderName, const QString &content);
+    void groupMembersReceived(uint64_t groupId, const QStringList &members);
     void systemNotification(const QString &text);
     void friendOnlineChanged(uint64_t userId, bool online);
 
@@ -138,11 +146,13 @@ private:
     void handleFileSendResponse(const chatroom::ChatMessage &msg);
     void handleFileTransferNotify(const chatroom::ChatMessage &msg);
     void sortContacts();
+    void onLoginTimeout();
 
     ProtocolClient *client_ = nullptr;
     uint64_t user_id_ = 0;
     QString username_;
     QString nickname_;
+    QString pending_nickname_;
     QString token_;
 
     QVector<ContactItem> contacts_;
@@ -154,6 +164,7 @@ private:
     QMap<uint32_t, std::function<void(const chatroom::ChatMessage &)>> pending_callbacks_;
 
     QTimer *refresh_timer_ = nullptr;
+    QTimer *login_timeout_timer_ = nullptr;
 
     static ClientState *instance_;
 };

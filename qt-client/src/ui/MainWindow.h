@@ -12,8 +12,6 @@
 class ChatInputBar;
 class InfoPanel;
 class FunctionBar;
-class ConfettiOverlay;
-class BombOverlay;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -22,14 +20,10 @@ public:
 
     void onLoginSuccess();
 
-signals:
-    void momentsClicked();
-
 private slots:
     void onContactClicked(const QModelIndex &index);
     void onSendMessage(const QString &text);
     void onFileUpload();
-    void onGameClicked();
     void onLoadHistory();
 
     // function bar actions
@@ -56,13 +50,12 @@ private slots:
     void onChatChanged();
     void onSystemNotification(const QString &text);
     void onIncomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
-    void onGameMove(const QString &move);
+    void onGroupMembersReceived(uint64_t groupId, const QStringList &members);
 
 private:
     void setupUi();
     void setupConnections();
     void updateRightPanel();
-    void showGameResult(const QString &playerMove);
 
     QSplitter *main_splitter_;
 
@@ -80,8 +73,4 @@ private:
     QStackedWidget *right_stack_;
     InfoPanel *info_panel_;
     FunctionBar *function_bar_;
-
-    // overlays
-    ConfettiOverlay *confetti_;
-    BombOverlay *bomb_;
 };

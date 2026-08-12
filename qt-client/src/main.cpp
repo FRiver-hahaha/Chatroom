@@ -4,7 +4,6 @@
 #include "state/ClientState.h"
 #include "ui/LoginWindow.h"
 #include "ui/MainWindow.h"
-#include "ui/MomentWindow.h"
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
@@ -40,9 +39,6 @@ int main(int argc, char *argv[]) {
 
     // main window (hidden until login)
     auto *mainWindow = new MainWindow();
-
-    // moments window
-    auto *momentWindow = new MomentWindow();
 
     // login result
     QObject::connect(state, &ClientState::loginResult, loginWindow,
@@ -96,10 +92,6 @@ int main(int argc, char *argv[]) {
                 loginWindow->show();
             }
         });
-
-    // moments
-    QObject::connect(mainWindow, &MainWindow::momentsClicked, momentWindow,
-        [momentWindow]() { momentWindow->show(); momentWindow->raise(); });
 
     // 启动时预连接默认服务器；登录/注册时若地址变化会自动重连
     client->connectToServer(loginWindow->host(), loginWindow->port());

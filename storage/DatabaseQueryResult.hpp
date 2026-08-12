@@ -48,6 +48,7 @@ struct QueryResult {
         bool is_online = false;
         bool is_blocked = false;
         uint64_t add_time = 0;
+        uint64_t streak_days = 0;  // 续火花天数
     };
     std::vector<FriendInfo> friend_list;
     

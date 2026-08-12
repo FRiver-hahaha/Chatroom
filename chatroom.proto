@@ -2,20 +2,16 @@ syntax = "proto3";
 
 package chatroom;
 
-// ============================================================
-// 顶层消息信封
-// ============================================================
-
 message ChatMessage {
-    uint32 type       = 1;  // MessageType 枚举值
+    uint32 type       = 1; 
     uint64 sender_id  = 2;
-    uint64 target_id  = 3;  // 私聊目标 / 好友目标
-    uint64 group_id   = 4;  // 群聊时使用
+    uint64 target_id  = 3; 
+    uint64 group_id   = 4; 
     uint64 timestamp  = 5;
     string token      = 6;
 
     oneof body {
-        // --- 账号模块 1-99 ---
+        // 账号模块 1-99
         LoginRequest          login_req           = 10;
         LoginResponse         login_rsp           = 11;
         RegisterRequest       register_req        = 12;
@@ -25,7 +21,7 @@ message ChatMessage {
         DeleteAccountRequest  delete_account_req  = 16;
         LogoutResponse        delete_account_rsp  = 17;
 
-        // --- 好友模块 100-199 ---
+        // 好友模块 100-19
         FriendOpRequest       add_friend_req      = 20;
         FriendOpResponse      add_friend_rsp      = 21;
         FriendOpRequest       delete_friend_req   = 22;
@@ -37,7 +33,7 @@ message ChatMessage {
         FriendOpRequest       unblock_friend_req  = 28;
         FriendOpResponse      unblock_friend_rsp  = 29;
 
-        // --- 群组模块 200-299 ---
+        // 群组模块 200-299
         CreateGroupRequest    create_group_req    = 30;
         GroupOpResponse       create_group_rsp    = 31;
         GroupOpRequest        dismiss_group_req   = 32;
@@ -61,7 +57,7 @@ message ChatMessage {
         GroupAdminRequest     reject_join_group_req  = 56;
         GroupOpResponse       reject_join_group_rsp  = 57;
 
-        // --- 聊天模块 300-399 ---
+        // 聊天模块 300-399
         ChatContent           private_chat_req    = 50;
         ChatResponse          private_chat_rsp    = 51;
         ChatContent           group_chat_req      = 52;
@@ -69,11 +65,11 @@ message ChatMessage {
         HistoryRequest        get_history_req     = 54;
         HistoryResponse       get_history_rsp     = 55;
 
-        // --- 好友模块扩展 ---
+        // 好友模块扩展
         FriendOpRequest       query_blocked_req   = 70;
         FriendListResponse    query_blocked_rsp   = 71;
 
-        // --- 文件发送模块 420-439 ---
+        // 文件发送模块 420-439
         FileSendRequest        file_send_req        = 80;
         FileSendResponse       file_send_rsp        = 81;
         FileTransfer           file_send_chunk_req  = 82;
@@ -88,9 +84,7 @@ message ChatMessage {
     }
 }
 
-// ============================================================
 // 账号模块
-// ============================================================
 
 message LoginRequest {
     string username = 1;
@@ -121,7 +115,7 @@ message RegisterResponse {
 }
 
 message LogoutRequest {
-    // token 已在 envelope 中
+    // string token      = 6;已经定义好了
 }
 
 message LogoutResponse {
@@ -133,9 +127,7 @@ message DeleteAccountRequest {
     string password = 1;
 }
 
-// ============================================================
 // 好友模块
-// ============================================================
 
 message FriendOpRequest {
     uint64 target_user_id = 1;
@@ -159,11 +151,10 @@ message FriendInfo {
     bool   is_online = 4;
     bool   is_blocked = 5;
     uint64 add_time  = 6;
+    uint64 streak_days = 7;  // 续火花天数
 }
 
-// ============================================================
 // 群组模块
-// ============================================================
 
 message CreateGroupRequest {
     string group_name  = 1;
@@ -216,9 +207,7 @@ message GroupMember {
     uint64 join_time  = 5;
 }
 
-// ============================================================
 // 聊天模块
-// ============================================================
 
 message ChatContent {
     string payload = 1;  // 消息正文
@@ -227,14 +216,14 @@ message ChatContent {
 message ChatResponse {
     bool   success        = 1;
     string error_message  = 2;
-    string content        = 3;  // 消息正文（转发时使用）
-    string sender_name    = 4;  // 发送者用户名（转发时使用）
+    string content        = 3;  
+    string sender_name    = 4;  
 }
 
 message HistoryRequest {
-    uint64 target_user_id = 1;  // 私聊历史：对方 user_id
-    uint64 group_id       = 2;  // 群聊历史：群组 ID
-    int32  limit          = 3;  // 返回条数，默认 50
+    uint64 target_user_id = 1;  
+    uint64 group_id       = 2; 
+    int32  limit          = 3;  // 默认 50
 }
 
 message HistoryResponse {
@@ -252,14 +241,12 @@ message MessageHistoryItem {
     bool   is_read     = 6;
 }
 
-// ============================================================
 // 文件模块
-// ============================================================
 
 message FileTransfer {
     string file_name = 1;
     uint64 file_size = 2;
-    bytes  file_data = 3;  // 文件内容（小文件直接内嵌）
+    bytes  file_data = 3;  // 文件内容
     uint32 chunk_seq = 4;  // 断点续传分片序号（0 = 完整文件）
     uint32 total_chunks = 5;
     bytes  chunk_hash = 6; // SHA-256 of file_data (32 bytes)
@@ -274,9 +261,7 @@ message FileResponse {
     bytes  file_data      = 6;
 }
 
-// ============================================================
 // 文件发送模块 (420-439)
-// ============================================================
 
 message FileSendRequest {
     string file_name = 1;
