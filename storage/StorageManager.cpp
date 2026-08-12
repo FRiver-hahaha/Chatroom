@@ -1382,6 +1382,94 @@ bool StorageManager::reject_transfer(uint64_t transfer_id) {
     return ok;
 }
 
+std::string StorageManager::assemble_final_file(uint64_t transfer_id,
+                                                 const std::string& file_name,
+                                                 const std::string& file_hash,
+                                                 const std::string& role,
+                                                 std::string& error_msg) {
+    auto info = get_transfer_info(transfer_id);
+    if (info.transfer_id == 0) {
+        error_msg = "transfer not found";
+        return "";
+    }
+
+    std::vector<uint32_t> chunks;
+    if (role == "sender")
+        chunks = get_sender_chunks(transfer_id);
+    else
+        chunks = get_receiver_chunks(transfer_id);
+
+    std::set<uint32_t> have(chunks.begin(), chunks.end());
+    for (uint32_t i = 0; i < info.total_chunks; ++i) {
+        if (!have.count(i)) {
+            error_msg = "missing chunks";
+            return "";
+        }
+    }
+    std::string dir = std::string(FILE_STORAGE_BASE) + "/complete";
+    mkdir(dir.c_str(), 0755);
+
+    std::string final_path = dir + "/" + std::to_string(transfer_id) + "_" + file_name;
+    std::string temp_path = final_path + ".tmp";
+
+    FILE* out = fopen(temp_path.c_str(), "wb");
+    if (!out) {
+        error_msg = "cannot create temp file";
+        return "";
+    }
+
+    std::string computed_hash;
+    for (uint32_t seq = 0; seq < info.total_chunks; ++seq) {
+        std::string chunk_data = get_transfer_chunk_data(transfer_id, seq);
+        if (chunk_data.empty()) {
+            fclose(out);
+            remove(temp_path.c_str());
+            error_msg = "chunk " + std::to_string(seq) + " unreadable";
+            return "";
+        }
+        fwrite(chunk_data.data(), 1, chunk_data.size(), out);
+    }
+    fclose(out);
+
+    if (!file_hash.empty()) {
+        FILE* fp = fopen(final_path.c_str(), "rb");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            std::string buf(sz, '\0');
+            fread(&buf[0], 1, sz, fp);
+            fclose(fp);
+
+            unsigned char digest[SHA256_DIGEST_LENGTH];
+            SHA256(reinterpret_cast<const unsigned char*>(buf.data()),
+                   buf.size(), digest);
+            computed_hash = bin_to_hex(digest, SHA256_DIGEST_LENGTH);
+
+            if (computed_hash != file_hash) {
+                remove(temp_path.c_str());
+                error_msg = "hash mismatch";
+                return "";
+            }
+        }
+    }
+
+    if (rename(temp_path.c_str(), final_path.c_str()) != 0) {
+        remove(temp_path.c_str());
+        error_msg = "rename failed";
+        return "";
+    }
+
+    std::string chunk_dir = std::string(FILE_STORAGE_BASE) + "/transfer_" + std::to_string(transfer_id);
+    std::string rm_cmd = "rm -rf " + chunk_dir;
+    system(rm_cmd.c_str());
+
+    redis_del(xfer_sender_key(transfer_id));
+    redis_del(xfer_receiver_key(transfer_id));
+
+    return final_path;
+}
+
 void StorageManager::set_online(uint64_t user_id)   { redis_sadd("chatroom:online", std::to_string(user_id)); }
 void StorageManager::set_offline(uint64_t user_id)  { redis_srem("chatroom:online", std::to_string(user_id)); }
 bool StorageManager::is_online(uint64_t user_id)     { return redis_sismember("chatroom:online", std::to_string(user_id)); }

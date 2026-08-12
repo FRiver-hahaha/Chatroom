@@ -12,7 +12,6 @@
 
 namespace chatroom {
 
-// 分片大小：64KB
 static constexpr size_t FILE_CHUNK_SIZE = 64 * 1024;
 
 class DatabaseQueryer {
@@ -20,7 +19,7 @@ public:
     explicit DatabaseQueryer(std::shared_ptr<StorageManager> storage)
         : storage_(storage) {}
 
-    QueryResult query(SessionState conn_state, const Message& msg) {
+    QueryResult query(SessionState conn_state, const Message& msg) {// 查询总函数
         int tv = static_cast<int>(msg.type);
         if (tv >= 1 && tv < 100)       return query_account(conn_state, msg);
         if (tv >= 100 && tv < 200)     return query_friend(conn_state, msg);
@@ -31,23 +30,21 @@ public:
     }
 
 private:
-    static std::pair<std::string, std::string> split_two(const std::string& s) {
+    static std::pair<std::string, std::string> split_two(const std::string& s) {// 分割字符
         size_t pos = s.find('\n');
         return (pos == std::string::npos) ? std::make_pair(s, std::string{})
                : std::make_pair(s.substr(0, pos), s.substr(pos + 1));
     }
 
-    static QueryResult fail(const std::string& msg) {
+    static QueryResult fail(const std::string& msg) {// 快速返回一个失败的查询结果
         QueryResult r; r.success = false; r.error_message = msg; return r;
     }
 
-    // helper: extract target_id from message
-    static uint64_t extract_target(const Message& msg) {
+    static uint64_t extract_target(const Message& msg) {// 提取目标用户id
         return msg.target_id != 0 ? msg.target_id : std::stoull(msg.payload);
     }
 
-    // helper: extract group_id and target_id from admin-style message
-    static std::pair<uint64_t, uint64_t> extract_group_target(const Message& msg) {
+    static std::pair<uint64_t, uint64_t> extract_group_target(const Message& msg) {// 提取群组id，和目标用户id
         uint64_t gid = msg.group_id, tid = msg.target_id;
         if (gid == 0 || tid == 0) {
             auto parts = split_two(msg.payload);
@@ -57,16 +54,14 @@ private:
         return {gid, tid};
     }
 
-    // check login + storage guards, returns false if blocked
-    bool check_guards(SessionState st, QueryResult& r) {
+    bool check_guards(SessionState st, QueryResult& r) {// 检查当前状态
         if (st != SessionState::LOGGED_IN) { r = fail("请先登录"); return false; }
         if (!storage_) { r = fail("存储服务未就绪"); return false; }
         return true;
     }
 
-    // simple storage op that just needs target_id
     using StorageBoolOp = bool (StorageManager::*)(uint64_t, uint64_t);
-    QueryResult do_friend_op(const Message& msg, StorageBoolOp op, const std::string& err) {
+    QueryResult do_friend_op(const Message& msg, StorageBoolOp op, const std::string& err) {// 模板函数
         QueryResult r;
         uint64_t tid = extract_target(msg);
         r.success = (storage_.get()->*op)(msg.sender_id, tid);
@@ -74,8 +69,7 @@ private:
         return r;
     }
 
-    // ===== Account =====
-    QueryResult query_account(SessionState conn_state, const Message& msg) {
+    QueryResult query_account(SessionState conn_state, const Message& msg) {// 处理登录相关的逻辑
         switch (msg.type) {
             case MessageType::LOGIN_REQ:          return handle_login_query(conn_state, msg);
             case MessageType::REGISTER_REQ:       return handle_register_query(conn_state, msg);
@@ -87,7 +81,7 @@ private:
         }
     }
 
-    QueryResult handle_login_query(SessionState conn_state, const Message& msg) {
+    QueryResult handle_login_query(SessionState conn_state, const Message& msg) {// 登录查询
         if (conn_state == SessionState::LOGGED_IN) return fail("您已登录，请勿重复登录");
         if (!storage_) return fail("存储服务未就绪");
 
@@ -106,7 +100,7 @@ private:
         return ur;
     }
 
-    QueryResult handle_register_query(SessionState, const Message& msg) {
+    QueryResult handle_register_query(SessionState, const Message& msg) {// 注册查询
         QueryResult r;
         if (!storage_) return fail("存储服务未就绪");
         auto [username, password_nick] = split_two(msg.payload);
@@ -120,7 +114,7 @@ private:
         return r;
     }
 
-    QueryResult handle_logout_query(SessionState, const Message& msg) {
+    QueryResult handle_logout_query(SessionState, const Message& msg) {// 登出查询
         if (!storage_) return fail("存储服务未就绪");
         QueryResult r;
         r.success = true;
@@ -132,11 +126,11 @@ private:
         return r;
     }
 
-    QueryResult handle_verify_code_query(SessionState, const Message&) {
+    QueryResult handle_verify_code_query(SessionState, const Message&) {// 验证密码
         QueryResult r; r.success = true; r.verify_code = "123456"; return r;
     }
 
-    QueryResult handle_password_reset_query(SessionState, const Message& msg) {
+    QueryResult handle_password_reset_query(SessionState, const Message& msg) {// 重新设置密码
         if (!storage_) return fail("存储服务未就绪");
         auto [uid_str, new_pass] = split_two(msg.payload);
         uint64_t uid = std::stoull(uid_str);
@@ -146,7 +140,7 @@ private:
         return r;
     }
 
-    QueryResult handle_delete_account_query(SessionState, const Message& msg) {
+    QueryResult handle_delete_account_query(SessionState, const Message& msg) {// 删除用户
         if (!storage_) return fail("存储服务未就绪");
         auto user = storage_->get_user_by_id(msg.sender_id);
         if (!user.success) return fail("用户不存在");
@@ -157,8 +151,7 @@ private:
         return r;
     }
 
-    // ===== Friend =====
-    QueryResult query_friend(SessionState conn_state, const Message& msg) {
+    QueryResult query_friend(SessionState conn_state, const Message& msg) {// 好友查询
         QueryResult r;
         if (conn_state != SessionState::LOGGED_IN) return fail("请先登录");
         if (!storage_) return fail("存储服务未就绪");
@@ -182,7 +175,7 @@ private:
         }
     }
 
-    QueryResult handle_add_friend_query(const Message& msg) {
+    QueryResult handle_add_friend_query(const Message& msg) {// 添加好友
         QueryResult r;
         uint64_t tid = extract_target(msg);
         if (!storage_->get_user_by_id(tid).success) return fail("目标用户不存在");
@@ -192,8 +185,7 @@ private:
         return r;
     }
 
-    // ===== Group =====
-    QueryResult query_group(SessionState conn_state, const Message& msg) {
+    QueryResult query_group(SessionState conn_state, const Message& msg) {// 群组查询
         QueryResult r;
         if (!check_guards(conn_state, r)) return r;
 
@@ -215,7 +207,6 @@ private:
 
     QueryResult handle_create_group_query(const Message& msg) {
         QueryResult r;
-        // payload format: "is_public\nname\ndescription"
         auto [pub_str, rest] = split_two(msg.payload);
         auto [name, desc] = split_two(rest);
         bool is_public = (pub_str != "0");
@@ -225,7 +216,7 @@ private:
         return r;
     }
 
-    QueryResult handle_dismiss_group_query(const Message& msg) {
+    QueryResult handle_dismiss_group_query(const Message& msg) {// 解散群组
         QueryResult r;
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
         r.group_id = gid;
@@ -238,7 +229,7 @@ private:
         return r;
     }
 
-    QueryResult handle_join_group_query(const Message& msg) {
+    QueryResult handle_join_group_query(const Message& msg) {// 处理加入群组
         QueryResult r;
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
         if (storage_->is_group_member(gid, msg.sender_id)) return fail("已经是群组成员");
@@ -263,7 +254,7 @@ private:
         return r;
     }
 
-    QueryResult handle_quit_group_query(const Message& msg) {
+    QueryResult handle_quit_group_query(const Message& msg) {// 退出群组
         QueryResult r;
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
         r.success = storage_->quit_group(gid, msg.sender_id);
@@ -271,13 +262,13 @@ private:
         return r;
     }
 
-    QueryResult handle_query_group_list_query(const Message& msg) {
+    QueryResult handle_query_group_list_query(const Message& msg) {// 获取用户加入的群组列表
         QueryResult r; r.success = true;
         r.group_list = storage_->get_user_groups(msg.sender_id);
         return r;
     }
 
-    QueryResult handle_query_group_members_query(const Message& msg) {
+    QueryResult handle_query_group_members_query(const Message& msg) {// 查询群组成员列表
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
         if (!storage_->is_group_member(gid, msg.sender_id)) return fail("你不是该群组成员");
         QueryResult r; r.success = true;
@@ -285,9 +276,8 @@ private:
         return r;
     }
 
-    // Group admin operations share identical structure — extract gid+tid, call storage
     using GroupAdminOp = bool (StorageManager::*)(uint64_t, uint64_t, uint64_t);
-    QueryResult do_group_admin_op(const Message& msg, GroupAdminOp op, const std::string& err) {
+    QueryResult do_group_admin_op(const Message& msg, GroupAdminOp op, const std::string& err) {// 群组查询模板函数
         QueryResult r;
         auto [gid, tid] = extract_group_target(msg);
         r.success = (storage_.get()->*op)(gid, msg.sender_id, tid);
@@ -312,8 +302,7 @@ private:
         return do_group_admin_op(msg, &StorageManager::remove_member, "移除群组成员失败");
     }
 
-    // ===== Chat =====
-    QueryResult query_chat(SessionState conn_state, const Message& msg) {
+    QueryResult query_chat(SessionState conn_state, const Message& msg) {// 聊天查询
         QueryResult r;
         if (!check_guards(conn_state, r)) return r;
 
@@ -325,7 +314,7 @@ private:
         }
     }
 
-    QueryResult handle_private_chat_query(const Message& msg) {
+    QueryResult handle_private_chat_query(const Message& msg) {// 处理私聊
         if (!storage_->is_friend(msg.sender_id, msg.target_id)) return fail("不是好友，无法发送私聊");
         if (storage_->is_blocked_by(msg.target_id, msg.sender_id)) return fail("你已被对方拉黑，无法发送消息");
 
@@ -340,7 +329,7 @@ private:
         return {true, "", 0, "", "", false};
     }
 
-    QueryResult handle_group_chat_query(const Message& msg) {
+    QueryResult handle_group_chat_query(const Message& msg) {// 处理群组聊天
         if (!storage_->is_group_member(msg.group_id, msg.sender_id)) return fail("你不在该群组中");
         storage_->save_group_message(msg.group_id, msg.sender_id, msg.payload);
         QueryResult r; r.success = true;
@@ -348,7 +337,7 @@ private:
         return r;
     }
 
-    QueryResult handle_get_history_query(const Message& msg) {
+    QueryResult handle_get_history_query(const Message& msg) {// 处理历史记录查询
         auto [target_str, rest] = split_two(msg.payload);
         auto [group_str, limit_str] = split_two(rest);
         uint64_t tid = target_str.empty() ? 0 : std::stoull(target_str);
@@ -364,8 +353,7 @@ private:
         return r;
     }
 
-    // ===== File Send (420-439) =====
-    QueryResult query_file_send(SessionState conn_state, const Message& msg) {
+    QueryResult query_file_send(SessionState conn_state, const Message& msg) {// 文件查询
         QueryResult r;
         if (!check_guards(conn_state, r)) return r;
 
@@ -374,13 +362,13 @@ private:
             case MessageType::FILE_SEND_CHUNK_REQ:       return handle_file_send_chunk_query(msg);
             case MessageType::FILE_TRANSFER_ACCEPT_REQ:  return handle_file_transfer_accept_query(msg);
             case MessageType::FILE_RECEIVE_CHUNK_REQ:    return handle_file_receive_chunk_query(msg);
-            case MessageType::FILE_TRANSFER_STATUS_REQ:  return handle_file_transfer_status_query(msg);
-            default: return fail("未知文件发送操作");
+             case MessageType::FILE_TRANSFER_STATUS_REQ:  return handle_file_transfer_status_query(msg);
+             case MessageType::FILE_FINALIZE_REQ:        return handle_file_finalize_query(msg);
+             default: return fail("未知文件发送操作");
         }
     }
 
-    QueryResult handle_file_send_query(const Message& msg) {
-        // 校验好友关系
+    QueryResult handle_file_send_query(const Message& msg) {// 文件发送
         if (!storage_->is_friend(msg.sender_id, msg.target_id))
             return fail("不是好友，无法发送文件");
         if (storage_->is_blocked_by(msg.target_id, msg.sender_id))
@@ -393,21 +381,20 @@ private:
                                                   msg.payload, msg.file_size, total, msg.file_hash);
         if (tid == 0) return fail("创建传输记录失败");
 
-        // 小文件：直接保存完整数据
+        // 小文件
         if (total <= 1 && !msg.file_data.empty()) {
-            // 验证小文件哈希
-            if (!msg.chunk_hash.empty()) {
+            if (!msg.chunk_hash.empty()) {// 哈希校验
                 unsigned char computed[SHA256_DIGEST_LENGTH];
                 SHA256(reinterpret_cast<const unsigned char*>(msg.file_data.data()),
-                       msg.file_data.size(), computed);
+                       msg.file_data.size(), computed);// 计算哈希
                 std::string computed_hex;
                 computed_hex.reserve(SHA256_DIGEST_LENGTH * 2);
                 for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
                     char buf[3];
                     snprintf(buf, sizeof(buf), "%02x", computed[i]);
                     computed_hex += buf;
-                }
-                if (computed_hex != msg.chunk_hash) {
+                }// 保存哈希
+                if (computed_hex != msg.chunk_hash) {// 哈希校验
                     storage_->reject_transfer(tid);
                     return fail("分片哈希校验失败");
                 }
@@ -417,14 +404,12 @@ private:
             storage_->complete_transfer(tid);
         }
 
-        // 记录为对方的待处理传输
         storage_->add_pending_transfer(msg.target_id, tid);
 
         QueryResult r; r.success = true; r.transfer_id = tid; return r;
     }
 
-    QueryResult handle_file_send_chunk_query(const Message& msg) {
-        // msg.payload = transfer_id (string), msg.chunk_seq, msg.file_data, msg.total_chunks
+    QueryResult handle_file_send_chunk_query(const Message& msg) {// 大文件传输处理
         uint64_t tid = 0;
         try { tid = std::stoull(msg.payload); } catch (...) { return fail("无效的传输ID"); }
 
@@ -432,7 +417,6 @@ private:
         if (info.transfer_id == 0) return fail("传输记录不存在");
         if (info.sender_id != msg.sender_id) return fail("无权操作此传输");
 
-        // 验证分片哈希（hex 比较）
         if (!msg.chunk_hash.empty()) {
             unsigned char computed[SHA256_DIGEST_LENGTH];
             SHA256(reinterpret_cast<const unsigned char*>(msg.file_data.data()),
@@ -444,32 +428,27 @@ private:
                 return fail("分片哈希校验失败");
         }
 
-        // 保存分片数据 + 哈希
         if (!storage_->save_transfer_chunk_data(tid, msg.chunk_seq, msg.file_data, msg.chunk_hash))
             return fail("保存分片失败");
         storage_->record_sender_chunk(tid, msg.chunk_seq);
 
-        // 最后一个分片：标记完成
         QueryResult r; r.success = true; r.transfer_id = tid;
-        r.target_user_id = info.receiver_id;  // 让 dispatcher 能查找接收方 fd
+        r.target_user_id = info.receiver_id;
         if (msg.chunk_seq == msg.total_chunks - 1 || msg.total_chunks <= 1) {
             storage_->complete_transfer(tid);
         }
         return r;
     }
 
-    QueryResult handle_file_transfer_accept_query(const Message& msg) {
-        // msg.payload = "transfer_id\naccept_flag" (1=accept, 0=reject)
+    QueryResult handle_file_transfer_accept_query(const Message& msg) {// 文件发送
         auto [tid_str, flag_str] = split_two(msg.payload);
         uint64_t tid = std::stoull(tid_str);
         bool accept = (flag_str == "1");
-
         auto info = storage_->get_transfer_info(tid);
         if (info.transfer_id == 0) return fail("传输记录不存在");
         if (info.receiver_id != msg.sender_id) return fail("无权操作此传输");
 
         if (accept) {
-            // B 接受传输：可以开始接收分片
             QueryResult r; r.success = true; r.transfer_id = tid;
             r.file_name = info.file_name; r.file_size = info.file_size;
             r.total_chunks = info.total_chunks;
@@ -480,8 +459,7 @@ private:
         }
     }
 
-    QueryResult handle_file_receive_chunk_query(const Message& msg) {
-        // msg.payload = transfer_id, msg.chunk_seq
+    QueryResult handle_file_receive_chunk_query(const Message& msg) {// 文件接收
         uint64_t tid = 0;
         try { tid = std::stoull(msg.payload); } catch (...) { return fail("无效的传输ID"); }
 
@@ -507,7 +485,7 @@ private:
         return r;
     }
 
-    QueryResult handle_file_transfer_status_query(const Message& msg) {
+    QueryResult handle_file_transfer_status_query(const Message& msg) {// 文件传输状态
         uint64_t tid = 0;
         try { tid = std::stoull(msg.payload); } catch (...) { return fail("无效的传输ID"); }
 
@@ -521,6 +499,34 @@ private:
         r.transfer_status = info.status;
         r.sender_received_chunks = storage_->get_sender_chunks(tid);
         r.receiver_received_chunks = storage_->get_receiver_chunks(tid);
+        return r;
+    }
+
+    QueryResult handle_file_finalize_query(const Message& msg) {// 拼接文件分片
+        auto [tid_str, hash_str] = split_two(msg.payload);
+        uint64_t tid = 0;
+        try { tid = std::stoull(tid_str); } catch (...) { return fail("无效的传输ID"); }
+
+        auto info = storage_->get_transfer_info(tid);
+        if (info.transfer_id == 0) return fail("传输记录不存在");
+
+        std::string role = (msg.sender_id == info.sender_id) ? "sender" : "receiver";
+        if (msg.sender_id != info.sender_id && msg.sender_id != info.receiver_id)
+            return fail("无权操作此传输");
+
+        std::string error_msg;
+        std::string final_path = storage_->assemble_final_file(tid, info.file_name,
+                                                                info.file_hash, role, error_msg);
+        if (final_path.empty()) {
+            return fail("组装文件失败: " + error_msg);
+        }
+
+        storage_->complete_transfer(tid);
+
+        QueryResult r; r.success = true; r.transfer_id = tid;
+        r.final_path = final_path;
+        r.target_user_id = info.receiver_id;
+        r.file_name = info.file_name;
         return r;
     }
 

@@ -440,15 +440,44 @@ void ClientState::acceptFileTransfer(uint64_t transferId, bool accept) {
 }
 
 void ClientState::receiveFileChunks(uint64_t transferId, const QString &savePath) {
-    storePendingCallback(static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_RSP),
-        [this](const chatroom::ChatMessage &) {
-            emit operationResult(true, "File received");
+    storePendingCallback(static_cast<uint32_t>(MessageType::FILE_FINALIZE_RSP),
+        [this](const chatroom::ChatMessage &msg) {
+            if (msg.file_finalize_rsp().success()) {
+                emit operationResult(true, QString("File assembled: %1")
+                        .arg(QString::fromStdString(msg.file_finalize_rsp().final_path())));
+            } else {
+                emit operationResult(false, "File finalize failed");
+            }
         });
-    buildAndSend(static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_REQ), [&](chatroom::ChatMessage &m) {
-        auto *body = m.mutable_file_receive_chunk_req();
-        body->set_transfer_id(transferId);
-        body->set_chunk_seq(0);
-    });
+    storePendingCallback(static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_RSP),
+        [this, transferId](const chatroom::ChatMessage &msg) {
+            if (msg.file_transfer_status_rsp().success()) {
+                const auto &r = msg.file_transfer_status_rsp();
+                // 请求缺失分片
+                std::set<uint32_t> have(r.receiver_received_chunks().begin(),
+                                        r.receiver_received_chunks().end());
+                for (uint32_t seq = 0; seq < r.total_chunks(); ++seq) {
+                    if (have.count(seq)) continue;
+                    buildAndSend(static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_REQ),
+                        [&](chatroom::ChatMessage &m) {
+                            auto *body = m.mutable_file_receive_chunk_req();
+                            body->set_transfer_id(transferId);
+                            body->set_chunk_seq(seq);
+                        });
+                }
+                // 发送 finalize 请求
+                buildAndSend(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ),
+                    [&](chatroom::ChatMessage &m) {
+                        auto *body = m.mutable_file_finalize_req();
+                        body->set_transfer_id(transferId);
+                    });
+            }
+        });
+    buildAndSend(static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_REQ),
+        [&](chatroom::ChatMessage &m) {
+            m.set_target_id(transferId);
+            m.mutable_file_transfer_status_req()->set_transfer_id(transferId);
+        });
 }
 
 // ===== state =====

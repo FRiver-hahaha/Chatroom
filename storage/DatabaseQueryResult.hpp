@@ -11,36 +11,31 @@ struct QueryResult {
     bool success = false;
     std::string error_message;
     
-    // ===== 通用字段 =====
+    
     uint64_t user_id = 0;
     std::string username;
     std::string nickname;
     bool is_online = false;
-    int user_status = 1;  // 0=inactive, 1=active, 2=banned
-    
-    // ===== 文件响应相关 =====
+    int user_status = 1;  
+
     uint64_t file_id = 0;
     std::string file_name;
     uint64_t file_size = 0;
-    std::string file_data;  // 文件下载时的实际内容
+    std::string file_data;  
     uint32_t chunk_seq = 0;
     uint32_t total_chunks = 0;
-    std::vector<uint32_t> received_chunks;  // 断点续传已收分片
+    std::vector<uint32_t> received_chunks;  
 
-    // ===== 文件传输 (420-439) 相关 =====
     uint64_t transfer_id = 0;
-    uint64_t target_user_id = 0;  // 接收方用户ID（用于转发）
-    std::string transfer_status;  // "sending" | "completed" | "rejected"
-    std::vector<uint32_t> sender_received_chunks;    // A 已上传的分片
-    std::vector<uint32_t> receiver_received_chunks;  // B 已接收的分片
-    std::string sender_name;  // 发送者用户名
-    std::string chunk_hash;   // SHA-256 of current chunk
-    std::string file_hash;    // SHA-256 of complete file
+    uint64_t target_user_id = 0;  
+    std::string transfer_status;  
+    std::vector<uint32_t> sender_received_chunks;    
+    std::vector<uint32_t> receiver_received_chunks;  
+    std::string sender_name;  
+    std::string chunk_hash;   
+    std::string file_hash;    
     
-    // ===== 群组相关 =====
     uint64_t group_id = 0;
-    
-    // ===== 好友相关 =====
     struct FriendInfo {
         uint64_t user_id;
         std::string username;
@@ -51,8 +46,6 @@ struct QueryResult {
         uint64_t streak_days = 0;  // 续火花天数
     };
     std::vector<FriendInfo> friend_list;
-    
-    // ===== 群组相关 =====
     struct GroupInfo {
         uint64_t group_id;
         std::string group_name;
@@ -72,8 +65,6 @@ struct QueryResult {
         uint64_t join_time = 0;
     };
     std::vector<GroupMember> group_members;
-    
-    // ===== 消息相关 =====
     struct MessageHistory {
         uint64_t message_id;
         uint64_t sender_id;
@@ -83,11 +74,9 @@ struct QueryResult {
         bool is_read = false;
     };
     std::vector<MessageHistory> history;
-    
-    // ===== 离线消息 =====
+
     std::vector<MessageHistory> offline_messages;
-    
-    // ===== 文件相关 =====
+
     struct FileInfo {
         uint64_t file_id;
         std::string file_name;
@@ -99,10 +88,10 @@ struct QueryResult {
         bool is_downloaded = false;
     };
     std::vector<FileInfo> offline_files;
-    
-    // ===== 其他 =====
+
     std::string token;
     std::string verify_code;
+    std::string final_path;
 };
 
 } // namespace chatroom

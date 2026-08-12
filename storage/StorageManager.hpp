@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <queue>
+#include <set>
 #include <mutex>
 #include <condition_variable>
 
@@ -162,6 +163,10 @@ public:
     bool clear_pending_transfers(uint64_t user_id);
     bool complete_transfer(uint64_t transfer_id);
     bool reject_transfer(uint64_t transfer_id);
+
+    std::string assemble_final_file(uint64_t transfer_id, const std::string& file_name,
+                                    const std::string& file_hash, const std::string& role,
+                                    std::string& error_msg);
 
     // 健康检查
     bool is_connected() const;

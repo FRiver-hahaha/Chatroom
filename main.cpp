@@ -11,7 +11,7 @@ using namespace chatroom;
 Server* g_server = nullptr;
 
 void signal_handler(int sig) {
-    LOG(INFO) << "\n[Main] 收到信号 " << sig << "，正在关闭..." ;
+    LOG(INFO) << "\n[Main] 收到信号 " << sig << "，正在关闭...";
     if (g_server) {
         g_server->stop();
     }
@@ -68,13 +68,13 @@ int main(int argc, char* argv[]) {
     if (argc >= 3) bind_host = argv[1];
     if (argc >= 2) port = std::atoi(argv[argc >= 3 ? 2 : 1]);
     if (port <= 0 || port > 65535) {
-        LOG(ERROR) << "[Main] 无效端口: " << port ;
+        LOG(ERROR) << "[Main] 无效端口: " << port;
         return 1;
     }
 
     auto storage = std::make_shared<StorageManager>();
     if (!storage->connect("localhost", "chatroom", "Chatroom@2026#Secure", "chatroom")) {
-        LOG(ERROR) << "[Main] 数据库连接失败，将以 mock 模式运行" ;
+        LOG(ERROR) << "[Main] 数据库连接失败，将以 mock 模式运行";
     }
 
     Server server(4);
@@ -82,35 +82,34 @@ int main(int argc, char* argv[]) {
     server.set_storage(storage);
 
     server.set_on_connect([](Connection* conn) {
-        LOG(INFO) << "[Callback] 新连接 fd=" << conn->fd ;
+        LOG(INFO) << "[Callback] 新连接 fd=" << conn->fd;
     });
 
     server.set_on_recv([&](Connection* conn, const std::string& data) {
         Message msg;
-        if (!MessageParser::parse(data.data(), static_cast<int>(data.size()), msg)) {// 解析
-            LOG(ERROR) << "[Pipeline] 消息解析失败" ;
+        if (!MessageParser::parse(data.data(), static_cast<int>(data.size()), msg)) {
+            LOG(ERROR) << "[Pipeline] 消息解析失败";
             server.send_to_async(conn->fd, "消息解析失败");
             return;
         }
 
         LOG(INFO) << "[Pipeline] 收到消息: " << message_type_name(msg.type)
                   << " 来自 fd=" << conn->fd
-                  << " user=" << conn->username ;
+                  << " user=" << conn->username;
 
         if (!conn->db_queryer_) {
             server.send_to_async(conn->fd, "服务未就绪");
             return;
         }
 
-        auto result = conn->db_queryer_->query(conn->state, msg);// 查询
+        auto result = conn->db_queryer_->query(conn->state, msg);
 
         if (!conn->dispatcher_) {
             server.send_to_async(conn->fd, "服务未就绪");
             return;
         }
 
-        conn->dispatcher_->dispatch(conn, msg, result);// 分发
-
+        conn->dispatcher_->dispatch(conn, msg, result);
         handle_session_events(server, storage, conn, msg, result);
     });
 
@@ -119,25 +118,25 @@ int main(int argc, char* argv[]) {
 
     server.set_on_close([&](Connection* conn) {
         LOG(INFO) << "[Callback] 连接 fd=" << conn->fd
-                  << " 已关闭 (user=" << conn->username << ")" ;
+                  << " 已关闭 (user=" << conn->username << ")";
         if (conn->user_id != 0) {
             storage->set_offline(conn->user_id);
         }
     });
 
     if (!server.start(bind_host, port)) {
-        LOG(ERROR) << "服务器启动失败" ;
+        LOG(ERROR) << "服务器启动失败";
         return 1;
     }
 
-    LOG(INFO) << "========================================" ;
-    LOG(INFO) << "  ChatRoom 服务器已启动" ;
-    LOG(INFO) << "  监听地址: " << bind_host << ":" << port ;
-    LOG(INFO) << "  按 Ctrl+C 停止" ;
-    LOG(INFO) << "========================================" ;
+    LOG(INFO) << "========================================";
+    LOG(INFO) << "  ChatRoom 服务器已启动";
+    LOG(INFO) << "  监听地址: " << bind_host << ":" << port;
+    LOG(INFO) << "  按 Ctrl+C 停止";
+    LOG(INFO) << "========================================";
 
     server.run();
 
-    LOG(INFO) << "[Main] 服务器已退出" ;
+    LOG(INFO) << "[Main] 服务器已正常退出";
     return 0;
 }

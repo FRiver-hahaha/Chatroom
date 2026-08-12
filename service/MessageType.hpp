@@ -84,6 +84,8 @@ enum class MessageType : uint32_t {
     FILE_RECEIVE_CHUNK_RSP = 428,
     FILE_TRANSFER_STATUS_REQ = 429,
     FILE_TRANSFER_STATUS_RSP = 430,
+    FILE_FINALIZE_REQ = 431,
+    FILE_FINALIZE_RSP = 432,
 };
 
 enum class MessageFlag : uint32_t {
@@ -197,6 +199,8 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::FILE_RECEIVE_CHUNK_RSP: return "FILE_RECEIVE_CHUNK_RSP";
         case MessageType::FILE_TRANSFER_STATUS_REQ: return "FILE_TRANSFER_STATUS_REQ";
         case MessageType::FILE_TRANSFER_STATUS_RSP: return "FILE_TRANSFER_STATUS_RSP";
+        case MessageType::FILE_FINALIZE_REQ: return "FILE_FINALIZE_REQ";
+        case MessageType::FILE_FINALIZE_RSP: return "FILE_FINALIZE_RSP";
         default: return "UNKNOWN";
     }
 }

@@ -81,6 +81,8 @@ message ChatMessage {
         FileTransfer               file_receive_chunk_rsp    = 88;
         FileTransferStatusRequest  file_transfer_status_req  = 89;
         FileTransferStatusResponse file_transfer_status_rsp  = 90;
+        FileFinalizeRequest        file_finalize_req        = 91;
+        FileFinalizeResponse       file_finalize_rsp        = 92;
     }
 }
 
@@ -314,5 +316,16 @@ message FileTransferStatusResponse {
     repeated uint32 sender_received_chunks = 6;    // A 已上传的分片
     repeated uint32 receiver_received_chunks = 7;  // B 已接收的分片
     string status         = 8;  // "sending" | "completed" | "rejected"
-    bytes  file_hash      = 9;  // SHA-256 of complete file (32 bytes)
+    string file_hash      = 9;  // SHA-256 hex of complete file
+}
+
+message FileFinalizeRequest {
+    uint64 transfer_id  = 1;
+    string file_hash    = 2;  // hex SHA-256 of complete file (optional, for verification)
+}
+
+message FileFinalizeResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    string final_path     = 3;  // absolute path of assembled file
 }

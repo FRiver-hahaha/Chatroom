@@ -234,8 +234,9 @@ private:
             case MessageType::FILE_SEND_CHUNK_REQ:      handle_file_send_chunk(conn, msg, result); break;
             case MessageType::FILE_TRANSFER_ACCEPT_REQ: handle_file_transfer_accept(conn, msg, result); break;
             case MessageType::FILE_RECEIVE_CHUNK_REQ:   handle_file_receive_chunk(conn, msg, result); break;
-            case MessageType::FILE_TRANSFER_STATUS_REQ: handle_file_transfer_status(conn, msg, result); break;
-            default: break;
+             case MessageType::FILE_TRANSFER_STATUS_REQ: handle_file_transfer_status(conn, msg, result); break;
+             case MessageType::FILE_FINALIZE_REQ:        handle_file_finalize(conn, msg, result); break;
+             default: break;
         }
     }
 
@@ -286,6 +287,16 @@ private:
 
     void handle_file_transfer_status(Connection* conn, const Message& msg, const QueryResult& result) {
         send_rsp(conn, msg, result);
+    }
+
+    void handle_file_finalize(Connection* conn, const Message& msg, const QueryResult& result) {
+        send_rsp(conn, msg, result);
+        if (result.success) {
+            // 通知接收方传输已完成
+            std::string notify_msg = "[系统通知] 用户 " + conn->username
+                                   + " 的文件传输已完成: " + (result.file_name.empty() ? "未知文件" : result.file_name);
+            notify_target(result.target_user_id, notify_msg);
+        }
     }
 
     SendFunc sender_;

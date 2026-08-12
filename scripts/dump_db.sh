@@ -44,6 +44,10 @@ if [ -n "$1" ]; then
     $MYSQL_CMD -e "SELECT * FROM files WHERE uploader_id=$USER_ID OR target_id=$USER_ID" 2>/dev/null
 
     echo ""
+    echo "=== MySQL: file_transfers (活跃传输) ==="
+    $MYSQL_CMD -e "SELECT ft.id AS transfer_id, ft.file_name, ft.file_size, ft.total_chunks, ft.status, ft.created_at, u1.username AS sender, u2.username AS receiver FROM file_transfers ft JOIN users u1 ON ft.sender_id=u1.id JOIN users u2 ON ft.receiver_id=u2.id WHERE ft.sender_id=$USER_ID OR ft.receiver_id=$USER_ID ORDER BY ft.created_at DESC LIMIT 20" 2>/dev/null
+
+    echo ""
     echo "=== Redis: 会话数据 (chatroom:session:$USER_ID) ==="
     $REDIS_CMD HGETALL "chatroom:session:$USER_ID" 2>/dev/null
 
@@ -78,6 +82,10 @@ else
     $MYSQL_CMD -e "SELECT m.id, u.username, LEFT(m.body, 40) as body_preview, m.created_at
         FROM messages m JOIN users u ON m.sender_id = u.id
         ORDER BY m.created_at DESC LIMIT 10" 2>/dev/null
+
+    echo ""
+    echo "=== MySQL: 活跃文件传输 ==="
+    $MYSQL_CMD -e "SELECT ft.id AS transfer_id, u1.username AS sender, u2.username AS receiver, ft.file_name, ft.file_size, ft.total_chunks, ft.status, ft.created_at FROM file_transfers ft JOIN users u1 ON ft.sender_id=u1.id JOIN users u2 ON ft.receiver_id=u2.id WHERE ft.status='sending' ORDER BY ft.created_at DESC LIMIT 20" 2>/dev/null
 fi
 
 echo ""

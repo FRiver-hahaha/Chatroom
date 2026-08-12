@@ -842,7 +842,35 @@ public:
         }
 
         fclose(fp);
-        std::cout << std::endl << "[成功] 文件发送完成!" << std::endl;
+
+        // Step 4: 发送 finalize 请求，服务端组装文件
+        {
+            chatroom::ChatMessage fin_msg;
+            fin_msg.set_type(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ));
+            fin_msg.set_token(token_);
+            fin_msg.set_sender_id(user_id_);
+            fin_msg.set_target_id(transfer_id);  // transfer_id in envelope
+            fin_msg.set_timestamp(time(nullptr));
+            auto* fb = fin_msg.mutable_file_finalize_req();
+            fb->set_transfer_id(transfer_id);
+            fb->set_file_hash(file_hash);  // hex SHA-256
+
+            if (!send_message(fin_msg)) {
+                std::cerr << "[警告] finalize 请求发送失败" << std::endl;
+                std::cout << std::endl << "[成功] 文件发送完成!" << std::endl;
+                return true;
+            }
+            auto fr = wait_response(MessageType::FILE_FINALIZE_RSP, 30);
+            if (fr.type() == static_cast<uint32_t>(MessageType::FILE_FINALIZE_RSP) &&
+                fr.has_file_finalize_rsp() && fr.file_finalize_rsp().success()) {
+                std::cout << std::endl << "[成功] 文件发送完成! 服务端已组装文件: "
+                          << fr.file_finalize_rsp().final_path() << std::endl;
+            } else {
+                std::cerr << "[警告] finalize 响应失败，但分片已全部发送" << std::endl;
+                std::cout << std::endl << "[成功] 文件发送完成!" << std::endl;
+            }
+        }
+
         return true;
     }
 
@@ -959,7 +987,35 @@ public:
         }
 
         fclose(fp);
-        std::cout << std::endl << "[成功] 文件已保存到: " << out_path << std::endl;
+
+        // Step: 发送 finalize 请求，服务端组装文件
+        {
+            chatroom::ChatMessage fin_msg;
+            fin_msg.set_type(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ));
+            fin_msg.set_token(token_);
+            fin_msg.set_sender_id(user_id_);
+            fin_msg.set_target_id(transfer_id);
+            fin_msg.set_timestamp(time(nullptr));
+            auto* fb = fin_msg.mutable_file_finalize_req();
+            fb->set_transfer_id(transfer_id);
+            fb->set_file_hash(r.file_hash());  // hex SHA-256 string
+
+            if (!send_message(fin_msg)) {
+                std::cerr << "[警告] finalize 请求发送失败" << std::endl;
+                std::cout << std::endl << "[成功] 文件已保存到: " << out_path << std::endl;
+                return true;
+            }
+            auto fr = wait_response(MessageType::FILE_FINALIZE_RSP, 30);
+            if (fr.type() == static_cast<uint32_t>(MessageType::FILE_FINALIZE_RSP) &&
+                fr.has_file_finalize_rsp() && fr.file_finalize_rsp().success()) {
+                std::cout << std::endl << "[成功] 文件接收完成! 服务端已组装: "
+                          << fr.file_finalize_rsp().final_path() << std::endl;
+            } else {
+                std::cerr << "[警告] finalize 响应失败" << std::endl;
+                std::cout << std::endl << "[成功] 文件已保存到: " << out_path << std::endl;
+            }
+        }
+
         return true;
     }
 

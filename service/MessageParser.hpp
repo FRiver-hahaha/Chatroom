@@ -11,7 +11,7 @@ namespace chatroom {
 
 class MessageParser {
 public:
-    static bool parse(const char* buffer, int len, Message& msg) {
+    static bool parse(const char* buffer, int len, Message& msg) {// 基础解析
         if (!buffer || len <= 0) {
             std::cerr << "[MessageParser] Invalid buffer" << std::endl;
             return false;
@@ -22,8 +22,8 @@ public:
             std::cerr << "[MessageParser] Protobuf parse failed" << std::endl;
             return false;
         }
-
-        msg.type      = static_cast<MessageType>(proto_msg.type());
+  
+        msg.type      = static_cast<MessageType>(proto_msg.type());// 填充msg结构体
         msg.sender_id = proto_msg.sender_id();
         msg.target_id = proto_msg.target_id();
         msg.group_id  = proto_msg.group_id();
@@ -132,7 +132,6 @@ public:
                 msg.file_hash = proto_msg.file_send_req().file_hash();
                 break;
             case ChatMessage::kFileSendChunkReq:
-                // transfer_id 来自 envelope 的 target_id
                 msg.payload = std::to_string(msg.target_id);
                 msg.file_data = proto_msg.file_send_chunk_req().file_data();
                 msg.file_size = proto_msg.file_send_chunk_req().file_size();
@@ -151,16 +150,19 @@ public:
             case ChatMessage::kFileTransferStatusReq:
                 msg.payload = std::to_string(proto_msg.file_transfer_status_req().transfer_id());
                 break;
+            case ChatMessage::kFileFinalizeReq:
+                msg.payload = std::to_string(msg.target_id) + "\n" + proto_msg.file_finalize_req().file_hash();
+                break;
             default:
                 break;
         }
 
-        msg.flags = get_flags_by_type(msg.type);
+        msg.flags = get_flags_by_type(msg.type);// 标注当前消息的依赖
 
         return true;
     }
 
-    static std::string serialize(const Message& msg) {
+    static std::string serialize(const Message& msg) {// 序列化，打包成proto格式
         ChatMessage proto_msg;
 
         proto_msg.set_type(static_cast<uint32_t>(msg.type));
@@ -178,7 +180,7 @@ public:
         return result;
     }
 
-    static std::string serialize_response(const Message& request_msg, const QueryResult& result) {
+    static std::string serialize_response(const Message& request_msg, const QueryResult& result) {// 处理响应的消息
         ChatMessage proto_msg;
 
         uint32_t response_type = static_cast<uint32_t>(request_msg.type) + 1;
@@ -501,6 +503,16 @@ public:
                 }
                 break;
             }
+            case MessageType::FILE_FINALIZE_REQ: {
+                auto* body = proto_msg.mutable_file_finalize_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_final_path(result.final_path);
+                } else {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -516,7 +528,7 @@ public:
     static std::string build_notification(uint64_t from_user_id,
                                            const std::string& from_username,
                                            const std::string& notification_type,
-                                           const std::string& content) {
+                                           const std::string& content) {// 构造离线推送
         ChatMessage proto_msg;
         proto_msg.set_type(static_cast<uint32_t>(MessageType::OFFLINE_MSG_NOTIFY));
         proto_msg.set_sender_id(from_user_id);
@@ -538,7 +550,7 @@ public:
     }
 
 private:
-    static uint32_t get_flags_by_type(MessageType type) {
+    static uint32_t get_flags_by_type(MessageType type) {// 获取当前消息的依赖内容
         uint32_t flags = 0;
         int type_val = static_cast<int>(type);
 
