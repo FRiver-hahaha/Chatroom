@@ -61,7 +61,6 @@ void Server::run() {
                 continue;
             }
             if (ret == -EAGAIN) {
-                // In some kernel/liburing versions, wait_cqe_timeout can return EAGAIN
                 struct timespec ts = {0, 1000000}; // 1ms
                 nanosleep(&ts, nullptr);
                 continue;

@@ -46,6 +46,9 @@ public:
             case ChatMessage::kDeleteAccountReq:
                 msg.payload = proto_msg.delete_account_req().password();
                 break;
+            case ChatMessage::kUpdateProfileReq:
+                msg.payload = proto_msg.update_profile_req().nickname();
+                break;
             case ChatMessage::kAddFriendReq:
                 msg.payload = std::to_string(proto_msg.add_friend_req().target_user_id());
                 break;
@@ -232,6 +235,16 @@ public:
                 auto* body = proto_msg.mutable_delete_account_rsp();
                 body->set_success(result.success);
                 if (!result.success) {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::UPDATE_PROFILE_REQ: {
+                auto* body = proto_msg.mutable_update_profile_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_nickname(result.nickname);
+                } else {
                     body->set_error_message(result.error_message);
                 }
                 break;
@@ -584,7 +597,6 @@ private:
             flags |= static_cast<uint32_t>(MessageFlag::NEED_DATABASE);
         }
 
-        // 文件发送模块也需要登录+数据库
         if (type_val >= 420 && type_val < 440) {
             flags |= static_cast<uint32_t>(MessageFlag::NEED_LOGIN);
             flags |= static_cast<uint32_t>(MessageFlag::NEED_DATABASE);

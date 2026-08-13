@@ -55,6 +55,7 @@ public:
     void registerUser(const QString &username, const QString &password, const QString &nickname);
     void logout();
     void deleteAccount(const QString &password);
+    void updateNickname(const QString &nickname);
 
     // friends
     void queryFriends();

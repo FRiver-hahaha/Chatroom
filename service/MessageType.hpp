@@ -9,7 +9,7 @@ namespace chatroom {
 enum class MessageType : uint32_t {
     UNKNOWN = 0,
     
-    // ===== 账号模块 1-99 =====
+    // 账号模块 1-99
     LOGIN_REQ = 1,
     LOGIN_RSP = 2,
     REGISTER_REQ = 3,
@@ -22,8 +22,10 @@ enum class MessageType : uint32_t {
     PASSWORD_RESET_RSP = 10,
     DELETE_ACCOUNT_REQ = 11,
     DELETE_ACCOUNT_RSP = 12,
+    UPDATE_PROFILE_REQ = 13,
+    UPDATE_PROFILE_RSP = 14,
     
-    // ===== 好友模块 100-199 =====
+    // 好友模块 100-199
     ADD_FRIEND_REQ = 100,
     ADD_FRIEND_RSP = 101,
     DELETE_FRIEND_REQ = 102,
@@ -37,7 +39,7 @@ enum class MessageType : uint32_t {
     QUERY_BLOCKED_REQ = 110,
     QUERY_BLOCKED_RSP = 111,
     
-    // ===== 群组模块 200-299 =====
+    // 群组模块 200-299
     CREATE_GROUP_REQ = 200,
     CREATE_GROUP_RSP = 201,
     DISMISS_GROUP_REQ = 202,
@@ -61,7 +63,7 @@ enum class MessageType : uint32_t {
     REJECT_JOIN_GROUP_REQ = 220,
     REJECT_JOIN_GROUP_RSP = 221,
     
-    // ===== 聊天模块 300-399 =====
+    // 聊天模块 300-399
     PRIVATE_CHAT_REQ = 300,
     PRIVATE_CHAT_RSP = 301,
     GROUP_CHAT_REQ = 302,
@@ -72,7 +74,7 @@ enum class MessageType : uint32_t {
     GET_GROUP_HISTORY_RSP = 307,
     OFFLINE_MSG_NOTIFY = 308,
 
-    // ===== 文件发送模块 420-439 =====
+    // 文件发送模块 420-439
     FILE_SEND_REQ = 420,
     FILE_SEND_RSP = 421,
     FILE_SEND_CHUNK_REQ = 422,
@@ -148,6 +150,8 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::LOGOUT_RSP: return "LOGOUT_RSP";
         case MessageType::DELETE_ACCOUNT_REQ: return "DELETE_ACCOUNT_REQ";
         case MessageType::DELETE_ACCOUNT_RSP: return "DELETE_ACCOUNT_RSP";
+        case MessageType::UPDATE_PROFILE_REQ: return "UPDATE_PROFILE_REQ";
+        case MessageType::UPDATE_PROFILE_RSP: return "UPDATE_PROFILE_RSP";
         case MessageType::ADD_FRIEND_REQ: return "ADD_FRIEND_REQ";
         case MessageType::ADD_FRIEND_RSP: return "ADD_FRIEND_RSP";
         case MessageType::DELETE_FRIEND_REQ: return "DELETE_FRIEND_REQ";

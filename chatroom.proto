@@ -20,6 +20,8 @@ message ChatMessage {
         LogoutResponse        logout_rsp          = 15;
         DeleteAccountRequest  delete_account_req  = 16;
         LogoutResponse        delete_account_rsp  = 17;
+        UpdateProfileRequest  update_profile_req  = 18;
+        UpdateProfileResponse update_profile_rsp  = 19;
 
         // 好友模块 100-19
         FriendOpRequest       add_friend_req      = 20;
@@ -127,6 +129,16 @@ message LogoutResponse {
 
 message DeleteAccountRequest {
     string password = 1;
+}
+
+message UpdateProfileRequest {
+    string nickname = 1;
+}
+
+message UpdateProfileResponse {
+    bool   success       = 1;
+    string error_message = 2;
+    string nickname      = 3;
 }
 
 // 好友模块

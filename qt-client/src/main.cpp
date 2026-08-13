@@ -4,19 +4,29 @@
 #include "state/ClientState.h"
 #include "ui/LoginWindow.h"
 #include "ui/MainWindow.h"
+#include "config/Config.hpp"
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("ChatRoom");
     app.setApplicationVersion("1.0");
 
+    // 默认值：先读配置文件，命令行参数可覆盖
+    chatroom::Config config;
+    QString defaultHost = "127.0.0.1";
+    quint16 defaultPort = 8080;
+    if (config.load("chatroom.conf")) {
+        defaultHost = QString::fromStdString(config.get("client", "host", "127.0.0.1"));
+        defaultPort = static_cast<quint16>(config.getInt("client", "port", 8080));
+    }
+
     QCommandLineParser parser;
     parser.setApplicationDescription("ChatRoom Qt Client");
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addOptions({
-        {{"H", "host"}, "Server host", "host", "127.0.0.1"},
-        {{"P", "port"}, "Server port", "port", "8080"},
+        {{"H", "host"}, "Server host", "host", defaultHost},
+        {{"P", "port"}, "Server port", "port", QString::number(defaultPort)},
     });
     parser.process(app);
 

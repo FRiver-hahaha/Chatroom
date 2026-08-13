@@ -28,6 +28,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBURING REQUIRED liburing)
 pkg_check_modules(HIREDIS REQUIRED hiredis)
 pkg_check_modules(MYSQLCLIENT REQUIRED mysqlclient)
+pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -91,12 +92,14 @@ target_include_directories(client PRIVATE
     ${PROTO_GEN_DIR}
     ${CMAKE_BINARY_DIR}
     ${PROTOBUF_INCLUDE_DIRS}
+    ${SQLITE3_INCLUDE_DIRS}
 )
 
 target_link_libraries(client PRIVATE
     ${PROTOBUF_LIBRARIES}
     OpenSSL::Crypto
     Threads::Threads
+    ${SQLITE3_LIBRARIES}
 )
 
 target_compile_options(client PRIVATE

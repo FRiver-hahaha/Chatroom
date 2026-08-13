@@ -1,0 +1,35 @@
+Log file created at: 2026/08/13 14:42:00
+Running on machine: FRiverscomputer
+Running duration (h:mm:ss): 0:00:00
+Log line format: [IWEF]yyyymmdd hh:mm:ss.uuuuuu threadid file:line] msg
+I20260813 14:42:00.591716 124578970664640 StorageManager.cpp:41] [MySQLPool] Initialized with 8 connections
+I20260813 14:42:00.598970 124578970664640 StorageManager.cpp:131] [StorageManager] Connected to MySQL and Redis
+I20260813 14:42:00.598996 124578970664640 threadPool.cpp:14] (init)初始化线程池,使用 4 个线程
+I20260813 14:42:00.599137 124578948970176 threadPool.cpp:14] (worker)工作线程
+I20260813 14:42:00.699321 124578940577472 threadPool.cpp:14] (worker)工作线程
+I20260813 14:42:00.799466 124578932184768 threadPool.cpp:14] (worker)工作线程
+I20260813 14:42:00.899679 124578923792064 threadPool.cpp:14] (worker)工作线程
+I20260813 14:42:00.999830 124578970664640 server.cpp:197] [Server] io_uring ready: SQ=2048, CQ=4096, SQPOLL=on
+I20260813 14:42:00.999907 124578970664640 server.cpp:246] [Server] Listening on 0.0.0.0:8080
+I20260813 14:42:00.999914 124578970664640 server.cpp:36] [Server] Started on 0.0.0.0:8080
+I20260813 14:42:00.999919 124578970664640 main.cpp:132] ========================================
+I20260813 14:42:00.999923 124578970664640 main.cpp:133]   ChatRoom 服务器已启动
+I20260813 14:42:00.999926 124578970664640 main.cpp:134]   监听地址: 0.0.0.0:8080
+I20260813 14:42:00.999930 124578970664640 main.cpp:135]   按 Ctrl+C 停止
+I20260813 14:42:00.999933 124578970664640 main.cpp:136] ========================================
+I20260813 14:42:00.999937 124578970664640 server.cpp:53] [Server] 主循环开始
+I20260813 14:44:00.690344 124578970664640 main.cpp:14] 
+[Main] 收到信号 15，正在关闭...
+I20260813 14:44:00.690435 124578970664640 server.cpp:44] [Server] 收到停止信号，正在退出主循环...
+I20260813 14:44:00.690451 124578970664640 server.cpp:71] [Server] 收到退出信号，停止主循环
+I20260813 14:44:00.690457 124578970664640 server.cpp:96] [Server] 主循环退出，正在清理资源...
+I20260813 14:44:00.690464 124578970664640 server.cpp:105] [Server] 所有连接已关闭
+I20260813 14:44:00.690527 124578970664640 server.cpp:108] [Server] io_uring 已清理
+I20260813 14:44:00.690539 124578970664640 server.cpp:120] [Server] 资源清理完成，服务器已停止
+I20260813 14:44:00.690545 124578970664640 main.cpp:140] [Main] 服务器已正常退出
+I20260813 14:44:00.690620 124578940577472 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:44:00.690678 124578932184768 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:44:00.690757 124578948970176 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:44:00.690810 124578923792064 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:44:00.690885 124578970664640 threadPool.cpp:14] (finish)线程池已关闭
+I20260813 14:44:00.691053 124578970664640 StorageManager.cpp:138] [StorageManager] Disconnected

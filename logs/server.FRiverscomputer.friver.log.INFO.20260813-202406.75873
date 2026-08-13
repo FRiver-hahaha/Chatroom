@@ -1,0 +1,22 @@
+Log file created at: 2026/08/13 20:24:06
+Running on machine: FRiverscomputer
+Running duration (h:mm:ss): 0:00:00
+Log line format: [IWEF]yyyymmdd hh:mm:ss.uuuuuu threadid file:line] msg
+[I StorageManager.cpp:57]  [MySQLPool] Initialized with 8 connections
+[I StorageManager.cpp:146]  [StorageManager] Connected to MySQL and Redis
+[I threadPool.cpp:14]  (init)初始化线程池,使用 4 个线程
+[I threadPool.cpp:14]  (worker)工作线程
+[I threadPool.cpp:14]  (worker)工作线程
+[I threadPool.cpp:14]  (worker)工作线程
+[I threadPool.cpp:14]  (worker)工作线程
+[I server.cpp:196]  [Server] io_uring ready: SQ=2048, CQ=4096, SQPOLL=on
+[E server.cpp:232]  bind: Address already in use
+[E server.cpp:31]  [Server] Failed to init listen socket
+[E main.cpp:146]  服务器启动失败
+[I server.cpp:44]  [Server] 收到停止信号，正在退出主循环...
+[I threadPool.cpp:14]  (worker)工作线程已销毁
+[I threadPool.cpp:14]  (worker)工作线程已销毁
+[I threadPool.cpp:14]  (worker)工作线程已销毁
+[I threadPool.cpp:14]  (worker)工作线程已销毁
+[I threadPool.cpp:14]  (finish)线程池已关闭
+[I StorageManager.cpp:153]  [StorageManager] Disconnected

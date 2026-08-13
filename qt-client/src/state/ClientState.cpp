@@ -136,6 +136,20 @@ void ClientState::deleteAccount(const QString &password) {
     });
 }
 
+void ClientState::updateNickname(const QString &nickname) {
+    storePendingCallback(static_cast<uint32_t>(MessageType::UPDATE_PROFILE_RSP),
+        [this](const chatroom::ChatMessage &msg) {
+            const auto &rsp = msg.update_profile_rsp();
+            if (rsp.success()) {
+                nickname_ = QString::fromStdString(rsp.nickname());
+            }
+            emit operationResult(rsp.success(), QString::fromStdString(rsp.error_message()));
+        });
+    buildAndSend(static_cast<uint32_t>(MessageType::UPDATE_PROFILE_REQ), [&](chatroom::ChatMessage &m) {
+        m.mutable_update_profile_req()->set_nickname(nickname.toStdString());
+    });
+}
+
 // ===== friends =====
 
 void ClientState::queryFriends() {

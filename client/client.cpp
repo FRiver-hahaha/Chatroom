@@ -9,6 +9,7 @@
 
 #include "chatroom.pb.h"
 #include "service/MessageType.hpp"
+#include "config/Config.hpp"
 
 #include <iostream>
 #include <string>
@@ -35,6 +36,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <openssl/sha.h>
+#include <sqlite3.h>
 
 using chatroom::MessageType; // 简化枚举使用
 
@@ -48,6 +50,102 @@ static std::string sha256_hex(const std::string& data) {
         oss << std::setw(2) << static_cast<int>(hash[i]);
     return oss.str();
 }
+
+// ============================================================
+// 本地 SQLite 存储（聊天记录落盘）
+// ============================================================
+class LocalStore {
+public:
+    bool open(const std::string& username) {
+        std::lock_guard<std::mutex> lock(mu_);
+        close_locked();
+        std::string db_path = "chatroom_" + username + ".db";
+        if (sqlite3_open(db_path.c_str(), &db_) != SQLITE_OK) {
+            std::cerr << "[本地存储] 打开数据库失败: "
+                      << (db_ ? sqlite3_errmsg(db_) : "未知错误") << std::endl;
+            if (db_) { sqlite3_close(db_); db_ = nullptr; }
+            return false;
+        }
+        const char* sql =
+            "CREATE TABLE IF NOT EXISTS messages ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " chat_type INTEGER NOT NULL,"
+            " peer_id INTEGER NOT NULL,"
+            " sender_id INTEGER NOT NULL,"
+            " sender_name TEXT,"
+            " content TEXT,"
+            " timestamp INTEGER,"
+            " is_self INTEGER)";
+        char* err = nullptr;
+        if (sqlite3_exec(db_, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+            std::cerr << "[本地存储] 建表失败: " << (err ? err : "未知错误") << std::endl;
+            sqlite3_free(err);
+        }
+        return true;
+    }
+
+    void close() {
+        std::lock_guard<std::mutex> lock(mu_);
+        close_locked();
+    }
+
+    // chat_type: 0=私聊, 1=群聊；peer_id: 私聊为对方 user_id，群聊为 group_id
+    void save_message(int chat_type, uint64_t peer_id, uint64_t sender_id,
+                      const std::string& sender_name, const std::string& content,
+                      uint64_t timestamp, bool is_self) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!db_) return;
+        const char* sql = "INSERT INTO messages "
+                          "(chat_type, peer_id, sender_id, sender_name, content, timestamp, is_self) "
+                          "VALUES (?,?,?,?,?,?,?)";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+        sqlite3_bind_int(stmt, 1, chat_type);
+        sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(peer_id));
+        sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(sender_id));
+        sqlite3_bind_text(stmt, 4, sender_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, content.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 6, static_cast<sqlite3_int64>(timestamp));
+        sqlite3_bind_int(stmt, 7, is_self ? 1 : 0);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    void print_history(int chat_type, uint64_t peer_id, int limit) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!db_) { std::cout << "  (本地数据库未打开)" << std::endl; return; }
+        std::string sql = "SELECT sender_name, content, timestamp, is_self FROM messages "
+                          "WHERE chat_type=" + std::to_string(chat_type) +
+                          " AND peer_id=" + std::to_string(peer_id) +
+                          " ORDER BY id DESC LIMIT " + std::to_string(limit);
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return;
+        std::vector<std::string> lines;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            const char* content = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            uint64_t ts = static_cast<uint64_t>(sqlite3_column_int64(stmt, 2));
+            int is_self = sqlite3_column_int(stmt, 3);
+            time_t t = static_cast<time_t>(ts);
+            char time_buf[32];
+            strftime(time_buf, sizeof(time_buf), "%m-%d %H:%M", localtime(&t));
+            std::string who = is_self ? "[我]" : ("[" + std::string(name ? name : "") + "]");
+            lines.push_back("  [" + std::string(time_buf) + "] " + who + ": " +
+                            (content ? content : ""));
+        }
+        sqlite3_finalize(stmt);
+        for (auto it = lines.rbegin(); it != lines.rend(); ++it)
+            std::cout << *it << std::endl;
+        if (lines.empty()) std::cout << "  (本地无记录)" << std::endl;
+    }
+
+private:
+    void close_locked() {
+        if (db_) { sqlite3_close(db_); db_ = nullptr; }
+    }
+    sqlite3* db_ = nullptr;
+    std::mutex mu_;
+};
 
 // ============================================================
 // ChatClient 类
@@ -199,6 +297,7 @@ public:
             user_id_ = r.user_id();
             username_ = r.username();
             token_ = r.token();
+            local_store_.open(username_);
             std::cout << "[成功] 登录成功! user_id=" << user_id_
                       << " username=" << username_ << std::endl;
             flush_notifications();
@@ -259,6 +358,7 @@ public:
         user_id_ = 0;
         username_.clear();
         token_.clear();
+        local_store_.close();
         return true;
     }
 
@@ -646,7 +746,9 @@ public:
 
         if (!send_message(msg)) return false;
         auto resp = wait_response(MessageType::PRIVATE_CHAT_RSP);
-        return handle_chat_resp(resp, "发送私聊");
+        bool ok = handle_chat_resp(resp, "发送私聊");
+        if (ok) local_store_.save_message(0, target_uid, user_id_, username_, text, time(nullptr), true);
+        return ok;
     }
 
     bool send_group_chat(uint64_t gid, const std::string& text) {
@@ -660,7 +762,9 @@ public:
 
         if (!send_message(msg)) return false;
         auto resp = wait_response(MessageType::GROUP_CHAT_RSP);
-        return handle_chat_resp(resp, "发送群聊");
+        bool ok = handle_chat_resp(resp, "发送群聊");
+        if (ok) local_store_.save_message(1, gid, user_id_, username_, text, time(nullptr), true);
+        return ok;
     }
 
     void get_history(uint64_t target_uid, uint64_t gid, int limit = 50) {
@@ -1022,6 +1126,13 @@ public:
     // 获取缓存数据
     const std::vector<chatroom::FriendInfo>& cached_friends() const { return friend_cache_; }
     const std::vector<chatroom::GroupInfo>& cached_groups() const { return group_cache_; }
+    const std::vector<uint64_t>& pending_transfers() const { return pending_transfers_; }
+    void clear_pending_transfers() { pending_transfers_.clear(); }
+
+    // 查看本地 SQLite 聊天记录（chat_type: 0=私聊, 1=群聊）
+    void show_local_history(int chat_type, uint64_t peer_id, int limit = 50) {
+        local_store_.print_history(chat_type, peer_id, limit);
+    }
 
 private:
     // ===== 接收循环（后台线程）=====
@@ -1111,6 +1222,14 @@ private:
                     content = msg.group_chat_rsp().content();
                 }
                 if (sender_name.empty()) sender_name = std::to_string(msg.sender_id());
+                // 落盘到本地 SQLite
+                if (mtype == static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP)) {
+                    local_store_.save_message(0, msg.sender_id(), msg.sender_id(),
+                                              sender_name, content, msg.timestamp(), false);
+                } else {
+                    local_store_.save_message(1, msg.group_id(), msg.sender_id(),
+                                              sender_name, content, msg.timestamp(), false);
+                }
                 notifications_.push_back(kind + " " + sender_name + ": " + content);
                 return;
             }
@@ -1215,6 +1334,8 @@ private:
     std::vector<chatroom::FriendInfo> friend_cache_;
     std::vector<chatroom::GroupInfo> group_cache_;
     std::vector<uint64_t> pending_transfers_;  // 待处理的文件传输 ID
+
+    LocalStore local_store_;  // 本地 SQLite 聊天记录
 };
 
 
@@ -1411,9 +1532,10 @@ void menu_chat(ChatClient& client) {
         std::cout << "  2. 群聊（发送消息）" << std::endl;
         std::cout << "  3. 查看私聊历史" << std::endl;
         std::cout << "  4. 查看群聊历史" << std::endl;
+        std::cout << "  5. 查看本地聊天记录" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(4);
+        int choice = read_choice(5);
         switch (choice) {
             case 0: return;
             case 1: {
@@ -1436,6 +1558,19 @@ void menu_chat(ChatClient& client) {
             case 4: {
                 uint64_t gid = read_uint64("  请输入 group_id: ");
                 client.get_history(0, gid, 50);
+                break;
+            }
+            case 5: {
+                std::string t = read_line("  类型 (1=私聊, 2=群聊): ");
+                if (t == "1") {
+                    uint64_t uid = read_uint64("  请输入对方 user_id: ");
+                    std::cout << "\n===== 本地私聊记录 =====" << std::endl;
+                    client.show_local_history(0, uid, 50);
+                } else if (t == "2") {
+                    uint64_t gid = read_uint64("  请输入 group_id: ");
+                    std::cout << "\n===== 本地群聊记录 =====" << std::endl;
+                    client.show_local_history(1, gid, 50);
+                }
                 break;
             }
         }
@@ -1461,8 +1596,26 @@ void menu_file(ChatClient& client) {
             }
             case 2: {
                 client.flush_notifications();
+                auto pending = client.pending_transfers();
+                if (pending.empty()) {
+                    std::cout << "  (没有待处理的文件)" << std::endl;
+                    break;
+                }
+                std::cout << "  待处理的 transfer_id: ";
+                for (size_t i = 0; i < pending.size(); ++i) {
+                    if (i) std::cout << ", ";
+                    std::cout << pending[i];
+                }
+                std::cout << std::endl;
                 uint64_t tid = read_uint64("  请输入 transfer_id (0=取消): ");
                 if (tid == 0) break;
+                // 校验输入是否在待处理列表中，避免手输错误导致“传输记录不存在”
+                bool found = false;
+                for (auto t : pending) if (t == tid) { found = true; break; }
+                if (!found) {
+                    std::cerr << "[错误] 该 transfer_id 不在待处理列表中" << std::endl;
+                    break;
+                }
                 std::string yn = read_line("  是否接受? (y/n): ");
                 if (yn != "y" && yn != "Y") {
                     client.accept_transfer(tid, false);
@@ -1555,6 +1708,13 @@ void main_menu(ChatClient& client) {
 int main(int argc, char* argv[]) {
     std::string host = "127.0.0.1";
     int port = 8080;
+
+    // 从配置文件读取（若存在），命令行参数仍可覆盖
+    chatroom::Config config;
+    if (config.load("chatroom.conf")) {
+        host = config.get("client", "host", host);
+        port = config.getInt("client", "port", port);
+    }
 
     if (argc >= 2) host = argv[1];
     if (argc >= 3) port = std::stoi(argv[2]);

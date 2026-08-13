@@ -10,8 +10,6 @@ class QKeyEvent;
 class ChatInputBar : public QWidget {
     Q_OBJECT
 public:
-    static constexpr int MaxMessageLength = 2000;
-
     explicit ChatInputBar(QWidget *parent = nullptr);
 
 signals:

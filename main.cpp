@@ -6,9 +6,17 @@
 #include <cerrno>
 #include <sys/stat.h>
 
+#include "config/Config.hpp"
+
 using namespace chatroom;
 
 Server* g_server = nullptr;
+
+static void compact_log_prefix(std::ostream& os, const google::LogMessage& msg, void*) {
+    const char* sev = google::GetLogSeverityName(msg.severity());
+    os << '[' << (sev && sev[0] ? sev[0] : '?') << ' '
+       << msg.basename() << ':' << msg.line() << "] ";
+}
 
 void signal_handler(int sig) {
     LOG(INFO) << "\n[Main] 收到信号 " << sig << "，正在关闭...";
@@ -53,7 +61,9 @@ static void handle_session_events(Server& server,
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
+    google::InstallPrefixFormatter(compact_log_prefix);
     FLAGS_log_dir = "logs";
+    FLAGS_alsologtostderr = true;
     FLAGS_stderrthreshold = 1;
     if (mkdir("logs", 0755) != 0 && errno != EEXIST) {
         FLAGS_logtostderr = true;
@@ -65,6 +75,13 @@ int main(int argc, char* argv[]) {
 
     std::string bind_host = "0.0.0.0";
     int port = 8080;
+
+    chatroom::Config config;
+    if (config.load("chatroom.conf")) {
+        bind_host = config.get("server", "host", bind_host);
+        port = config.getInt("server", "port", port);
+    }
+
     if (argc >= 3) bind_host = argv[1];
     if (argc >= 2) port = std::atoi(argv[argc >= 3 ? 2 : 1]);
     if (port <= 0 || port > 65535) {

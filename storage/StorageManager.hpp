@@ -70,6 +70,7 @@ public:
     QueryResult get_user_by_id(uint64_t user_id);
     bool verify_password(const std::string& username, const std::string& password);
     bool update_password(uint64_t user_id, const std::string& new_password);
+    bool update_nickname(uint64_t user_id, const std::string& nickname);
 
     // 状态模块
     std::string create_session(uint64_t user_id, const std::string& username);

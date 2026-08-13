@@ -1,0 +1,22 @@
+Log file created at: 2026/08/13 14:46:18
+Running on machine: FRiverscomputer
+Running duration (h:mm:ss): 0:00:00
+Log line format: [IWEF]yyyymmdd hh:mm:ss.uuuuuu threadid file:line] msg
+I20260813 14:46:18.248107 138608508554944 StorageManager.cpp:41] [MySQLPool] Initialized with 8 connections
+I20260813 14:46:18.255400 138608508554944 StorageManager.cpp:131] [StorageManager] Connected to MySQL and Redis
+I20260813 14:46:18.255431 138608508554944 threadPool.cpp:14] (init)初始化线程池,使用 4 个线程
+I20260813 14:46:18.255574 138608486905536 threadPool.cpp:14] (worker)工作线程
+I20260813 14:46:18.355753 138608478512832 threadPool.cpp:14] (worker)工作线程
+I20260813 14:46:18.455899 138608470120128 threadPool.cpp:14] (worker)工作线程
+I20260813 14:46:18.556052 138608258315968 threadPool.cpp:14] (worker)工作线程
+I20260813 14:46:18.656214 138608508554944 server.cpp:197] [Server] io_uring ready: SQ=2048, CQ=4096, SQPOLL=on
+E20260813 14:46:18.656260 138608508554944 server.cpp:233] bind: Address already in use
+E20260813 14:46:18.656561 138608508554944 server.cpp:31] [Server] Failed to init listen socket
+E20260813 14:46:18.656593 138608508554944 main.cpp:128] 服务器启动失败
+I20260813 14:46:18.656689 138608508554944 server.cpp:44] [Server] 收到停止信号，正在退出主循环...
+I20260813 14:46:18.656730 138608478512832 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:46:18.656762 138608470120128 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:46:18.656794 138608486905536 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:46:18.656826 138608258315968 threadPool.cpp:14] (worker)工作线程已销毁
+I20260813 14:46:18.656860 138608508554944 threadPool.cpp:14] (finish)线程池已关闭
+I20260813 14:46:18.657000 138608508554944 StorageManager.cpp:138] [StorageManager] Disconnected

@@ -337,7 +337,16 @@ void MainWindow::onEditProfile() {
     if (dlg->exec() == QDialog::Accepted) {
         QString newNick = dlg->newNickname();
         if (!newNick.isEmpty()) {
-            QMessageBox::information(this, "提示", "修改昵称需要服务端支持");
+            auto *state = ClientState::instance();
+            auto *conn = new QMetaObject::Connection();
+            *conn = connect(state, &ClientState::operationResult, this,
+                [this, conn](bool ok, const QString &err) {
+                    disconnect(*conn);
+                    delete conn;
+                    if (ok) QMessageBox::information(this, "提示", "昵称修改成功");
+                    else QMessageBox::warning(this, "提示", "昵称修改失败: " + err);
+                });
+            state->updateNickname(newNick);
         }
     }
     dlg->deleteLater();

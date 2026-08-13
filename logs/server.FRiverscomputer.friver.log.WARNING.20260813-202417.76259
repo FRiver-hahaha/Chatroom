@@ -1,0 +1,7 @@
+Log file created at: 2026/08/13 20:24:17
+Running on machine: FRiverscomputer
+Running duration (h:mm:ss): 0:00:00
+Log line format: [IWEF]yyyymmdd hh:mm:ss.uuuuuu threadid file:line] msg
+[E server.cpp:232]  bind: Address already in use
+[E server.cpp:31]  [Server] Failed to init listen socket
+[E main.cpp:146]  服务器启动失败

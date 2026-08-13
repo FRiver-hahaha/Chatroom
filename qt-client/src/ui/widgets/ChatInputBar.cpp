@@ -4,8 +4,6 @@
 #include <QKeyEvent>
 #include <QLabel>
 
-constexpr int ChatInputBar::MaxMessageLength;
-
 ChatInputBar::ChatInputBar(QWidget *parent)
     : QWidget(parent)
 {
@@ -27,7 +25,7 @@ ChatInputBar::ChatInputBar(QWidget *parent)
     text_edit_->setMinimumHeight(36);
     editLayout->addWidget(text_edit_);
 
-    char_count_label_ = new QLabel(QString("0/%1").arg(MaxMessageLength));
+    char_count_label_ = new QLabel(QString::fromUtf8("0 字"));
     char_count_label_->setAlignment(Qt::AlignRight);
     char_count_label_->setStyleSheet("font-size: 10px; color: #999; padding-right: 2px;");
     editLayout->addWidget(char_count_label_);
@@ -51,16 +49,8 @@ ChatInputBar::ChatInputBar(QWidget *parent)
     connect(send_btn_, &QPushButton::clicked, this, &ChatInputBar::onSendClicked);
 
     connect(text_edit_, &QTextEdit::textChanged, this, [this]() {
-        QString text = text_edit_->toPlainText();
-        if (text.size() > MaxMessageLength) {
-            QTextCursor cursor = text_edit_->textCursor();
-            int pos = cursor.position();
-            text_edit_->setPlainText(text.left(MaxMessageLength));
-            cursor.setPosition(qMin(pos, MaxMessageLength));
-            text_edit_->setTextCursor(cursor);
-        }
         char_count_label_->setText(
-            QString("%1/%2").arg(text_edit_->toPlainText().size()).arg(MaxMessageLength));
+            QString("%1 字").arg(text_edit_->toPlainText().size()));
     });
 
     connect(file_btn_, &QPushButton::clicked, this, &ChatInputBar::fileUploadClicked);
@@ -70,7 +60,7 @@ ChatInputBar::ChatInputBar(QWidget *parent)
 void ChatInputBar::onSendClicked() {
     QString text = text_edit_->toPlainText().trimmed();
     if (text.isEmpty()) return;
-    emit sendClicked(text.left(MaxMessageLength));
+    emit sendClicked(text);
     text_edit_->clear();
 }
 

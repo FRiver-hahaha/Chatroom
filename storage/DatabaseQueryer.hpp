@@ -77,6 +77,7 @@ private:
             case MessageType::VERIFY_CODE_REQ:    return handle_verify_code_query(conn_state, msg);
             case MessageType::PASSWORD_RESET_REQ: return handle_password_reset_query(conn_state, msg);
             case MessageType::DELETE_ACCOUNT_REQ: return handle_delete_account_query(conn_state, msg);
+            case MessageType::UPDATE_PROFILE_REQ: return handle_update_profile_query(conn_state, msg);
             default: return fail("未知账号操作");
         }
     }
@@ -148,6 +149,18 @@ private:
         QueryResult r;
         r.success = storage_->delete_user(msg.sender_id);
         if (!r.success) r.error_message = "注销失败";
+        return r;
+    }
+
+    QueryResult handle_update_profile_query(SessionState, const Message& msg) {// 更新昵称
+        if (!storage_) return fail("存储服务未就绪");
+        std::string nickname = msg.payload;
+        if (nickname.empty()) return fail("昵称不能为空");
+        if (nickname.size() > 128) return fail("昵称过长（最多 128 字符）");
+        QueryResult r;
+        r.success = storage_->update_nickname(msg.sender_id, nickname);
+        if (!r.success) r.error_message = "修改昵称失败";
+        else r.nickname = nickname;
         return r;
     }
 
