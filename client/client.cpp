@@ -23,6 +23,7 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+
 #include <sstream>
 #include <iomanip>
 #include <limits>
@@ -1925,7 +1926,7 @@ int main(int argc, char* argv[]) {
     if (argc >= 3) port = std::stoi(argv[2]);
 
     std::cout << "╔══════════════════════════════════════════╗" << std::endl;
-    std::cout << "║       ChatRoom 命令行测试客户端           ║" << std::endl;
+    std::cout << "║       ChatRoom 命令行测试客户端             ║" << std::endl;
     std::cout << "╚══════════════════════════════════════════╝" << std::endl;
     std::cout << "  服务端: " << host << ":" << port << std::endl;
     std::cout << "  用法: " << argv[0] << " [host] [port]" << std::endl;

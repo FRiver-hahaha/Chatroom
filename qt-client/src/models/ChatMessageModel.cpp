@@ -50,6 +50,19 @@ void ChatMessageModel::appendMessage(const MessageItem &msg) {
     endInsertRows();
 }
 
+void ChatMessageModel::prependMessages(const QVector<MessageItem> &messages) {
+    if (messages.isEmpty()) return;
+    beginInsertRows(QModelIndex(), 0, messages.size() - 1);
+    messages_ = messages + messages_;
+    endInsertRows();
+}
+
+const MessageItem &ChatMessageModel::messageAt(int row) const {
+    static const MessageItem empty;
+    if (row < 0 || row >= messages_.size()) return empty;
+    return messages_[row];
+}
+
 void ChatMessageModel::updateLastStatus(MessageItem::Status status) {
     if (messages_.isEmpty()) return;
     int last = messages_.size() - 1;

@@ -5,6 +5,7 @@
 #include <QString>
 
 class QToolButton;
+class QAction;
 
 class FunctionBar : public QWidget {
     Q_OBJECT
@@ -45,14 +46,16 @@ private:
     QPushButton *join_group_btn_;
     QPushButton *group_invites_btn_;
 
-    QPushButton *quit_group_btn_;
-    QPushButton *view_members_btn_;
-    QPushButton *change_group_name_btn_;
-    QPushButton *approve_join_btn_;
-    QPushButton *remove_member_btn_;
-    QPushButton *add_admin_btn_;
-    QPushButton *remove_admin_btn_;
-    QPushButton *dismiss_group_btn_;
+    // 群组管理：下拉菜单（仿拉黑好友）
+    QToolButton *group_mgr_btn_;
+    QAction *act_view_members_;
+    QAction *act_change_name_;
+    QAction *act_approve_join_;
+    QAction *act_remove_member_;
+    QAction *act_add_admin_;
+    QAction *act_remove_admin_;
+    QAction *act_dismiss_;
+    QAction *act_quit_;
 
     QPushButton *edit_profile_btn_;
     QPushButton *delete_account_btn_;

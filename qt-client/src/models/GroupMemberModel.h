@@ -3,14 +3,7 @@
 #include <QAbstractListModel>
 #include <QVector>
 #include <QString>
-
-struct GroupMemberItem {
-    uint64_t user_id = 0;
-    QString username;
-    QString nickname;
-    QString role;
-    uint64_t join_time = 0;
-};
+#include "state/ClientState.h"
 
 class GroupMemberModel : public QAbstractListModel {
     Q_OBJECT

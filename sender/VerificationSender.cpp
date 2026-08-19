@@ -110,7 +110,6 @@ bool VerificationSender::send_email(const std::string& to, const std::string& co
 
     std::string reply;
     if (ok) {
-        // 服务器问候：直接读取，不发送任何命令（避免被 QQ 等服务器拒绝）
         char buf[4096];
         int n = BIO_read(bio, buf, sizeof(buf) - 1);
         if (n > 0) {
@@ -136,8 +135,9 @@ bool VerificationSender::send_email(const std::string& to, const std::string& co
             "Content-Type: text/plain; charset=UTF-8\r\n"
             "Content-Transfer-Encoding: 8bit\r\n"
             "\r\n"
+            "亲爱的用户您好～\r\n"
             "您的验证码是: " + code + "\r\n"
-            "5 分钟内有效，请勿泄露给他人。\r\n"
+            "在 5 分钟内有效，请勿泄露给其他人～\r\n"
             ".\r\n";
         ok = (BIO_write(bio, body.data(), static_cast<int>(body.size())) > 0);
         if (ok) ok = (smtp_command(bio, "", &reply) / 100 == 2);

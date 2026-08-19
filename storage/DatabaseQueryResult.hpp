@@ -10,6 +10,7 @@ namespace chatroom {
 struct QueryResult {
     bool success = false;
     std::string error_message;
+    bool pending = false;
     
     
     uint64_t user_id = 0;
@@ -54,6 +55,7 @@ struct QueryResult {
         uint64_t member_count;
         bool is_member = false;
         bool is_public = true;
+        std::string role;  // 当前用户在该群的角色: owner / admin / member
     };
     std::vector<GroupInfo> group_list;
     

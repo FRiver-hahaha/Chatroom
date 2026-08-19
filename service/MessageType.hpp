@@ -62,6 +62,11 @@ enum class MessageType : uint32_t {
     REMOVE_GROUP_MEMBER_RSP = 219,
     REJECT_JOIN_GROUP_REQ = 220,
     REJECT_JOIN_GROUP_RSP = 221,
+    GROUP_MEMBERS_CHANGED = 222,
+    
+    // 心跳 15-16
+    HEARTBEAT_REQ = 15,
+    HEARTBEAT_RSP = 16,
     
     // 聊天模块 300-399
     PRIVATE_CHAT_REQ = 300,

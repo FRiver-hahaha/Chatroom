@@ -64,7 +64,9 @@ public:
                 msg.payload = proto_msg.update_profile_req().nickname();
                 break;
             case ChatMessage::kAddFriendReq:
-                msg.payload = std::to_string(proto_msg.add_friend_req().target_user_id())
+                msg.payload = (proto_msg.add_friend_req().target_user_id()
+                                   ? std::to_string(proto_msg.add_friend_req().target_user_id())
+                                   : "")
                             + "\n" + proto_msg.add_friend_req().target_email();
                 break;
             case ChatMessage::kDeleteFriendReq:
@@ -132,6 +134,9 @@ public:
                 msg.group_id = proto_msg.reject_join_group_req().group_id();
                 msg.target_id = proto_msg.reject_join_group_req().target_user_id();
                 break;
+            case ChatMessage::kHeartbeatReq:
+                msg.payload = "";
+                break;
             case ChatMessage::kPrivateChatReq:
                 msg.payload = proto_msg.private_chat_req().payload();
                 break;
@@ -196,6 +201,18 @@ public:
             return "";
         }
         return result;
+    }
+
+    static void fill_members(GroupOpResponse* body,
+                             const std::vector<QueryResult::GroupMember>& members) {// 填充群成员列表
+        for (const auto& m : members) {
+            auto* gm = body->add_members();
+            gm->set_user_id(m.user_id);
+            gm->set_username(m.username);
+            gm->set_nickname(m.nickname);
+            gm->set_role(m.role);
+            gm->set_join_time(m.join_time);
+        }
     }
 
     static std::string serialize_response(const Message& request_msg, const QueryResult& result) {// 处理响应的消息
@@ -376,6 +393,7 @@ public:
                 body->set_success(result.success);
                 if (result.success) {
                     body->set_group_id(result.group_id);
+                    body->set_pending(result.pending);
                 } else {
                     body->set_error_message(result.error_message);
                 }
@@ -402,6 +420,7 @@ public:
                         info->set_member_count(g.member_count);
                         info->set_is_member(g.is_member);
                         info->set_is_public(g.is_public);
+                        info->set_role(g.role);
                     }
                 } else {
                     body->set_error_message(result.error_message);
@@ -428,7 +447,10 @@ public:
             case MessageType::ADD_GROUP_ADMIN_REQ: {
                 auto* body = proto_msg.mutable_add_group_admin_rsp();
                 body->set_success(result.success);
-                if (!result.success) {
+                if (result.success) {
+                    body->set_group_id(result.group_id);
+                    fill_members(body, result.group_members);
+                } else {
                     body->set_error_message(result.error_message);
                 }
                 break;
@@ -436,7 +458,10 @@ public:
             case MessageType::REMOVE_GROUP_ADMIN_REQ: {
                 auto* body = proto_msg.mutable_remove_group_admin_rsp();
                 body->set_success(result.success);
-                if (!result.success) {
+                if (result.success) {
+                    body->set_group_id(result.group_id);
+                    fill_members(body, result.group_members);
+                } else {
                     body->set_error_message(result.error_message);
                 }
                 break;
@@ -446,6 +471,7 @@ public:
                 body->set_success(result.success);
                 if (result.success) {
                     body->set_group_id(result.group_id);
+                    fill_members(body, result.group_members);
                 } else {
                     body->set_error_message(result.error_message);
                 }
@@ -454,7 +480,10 @@ public:
             case MessageType::REMOVE_GROUP_MEMBER_REQ: {
                 auto* body = proto_msg.mutable_remove_group_member_rsp();
                 body->set_success(result.success);
-                if (!result.success) {
+                if (result.success) {
+                    body->set_group_id(result.group_id);
+                    fill_members(body, result.group_members);
+                } else {
                     body->set_error_message(result.error_message);
                 }
                 break;
@@ -462,9 +491,17 @@ public:
             case MessageType::REJECT_JOIN_GROUP_REQ: {
                 auto* body = proto_msg.mutable_reject_join_group_rsp();
                 body->set_success(result.success);
-                if (!result.success) {
+                if (result.success) {
+                    body->set_group_id(result.group_id);
+                    fill_members(body, result.group_members);
+                } else {
                     body->set_error_message(result.error_message);
                 }
+                break;
+            }
+            case MessageType::HEARTBEAT_REQ: {
+                auto* body = proto_msg.mutable_heartbeat_rsp();
+                body->set_success(result.success);
                 break;
             }
             case MessageType::PRIVATE_CHAT_REQ: {

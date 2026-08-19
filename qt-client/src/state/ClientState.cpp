@@ -35,6 +35,15 @@ ClientState::ClientState(QObject *parent)
 
     login_timeout_timer_ = new QTimer(this);
     connect(login_timeout_timer_, &QTimer::timeout, this, &ClientState::onLoginTimeout);
+
+    heartbeat_timer_ = new QTimer(this);
+    heartbeat_timer_->setInterval(25000);
+    connect(heartbeat_timer_, &QTimer::timeout, this, &ClientState::sendHeartbeat);
+}
+
+void ClientState::sendHeartbeat() {// 心跳，防止服务端空闲超时断开
+    if (!isLoggedIn()) return;
+    buildAndSend(static_cast<uint32_t>(MessageType::HEARTBEAT_REQ), nullptr);
 }
 
 void ClientState::refreshContacts() {
@@ -296,12 +305,17 @@ void ClientState::createGroup(const QString &name, const QString &desc, bool isP
 void ClientState::joinGroup(uint64_t groupId) {
     storePendingCallback(static_cast<uint32_t>(MessageType::JOIN_GROUP_RSP),
         [this](const chatroom::ChatMessage &msg) {
-            if (msg.join_group_rsp().success()) {
-                queryGroupList();  // 快速刷新群组列表
-                emit systemNotification("已加入群组");
+            const auto &rsp = msg.join_group_rsp();
+            if (rsp.success()) {
+                if (rsp.pending()) {
+                    emit systemNotification("入群申请已发送，等待管理员审批");
+                } else {
+                    queryGroupList();  // 快速刷新群组列表
+                    emit systemNotification("已加入群组");
+                }
             }
-            emit operationResult(msg.join_group_rsp().success(),
-                                 QString::fromStdString(msg.join_group_rsp().error_message()));
+            emit operationResult(rsp.success(),
+                                 QString::fromStdString(rsp.error_message()));
         });
     buildAndSend(static_cast<uint32_t>(MessageType::JOIN_GROUP_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_join_group_req()->set_group_id(groupId);
@@ -364,8 +378,10 @@ void ClientState::queryGroupMembers(uint64_t groupId) {
 void ClientState::addGroupAdmin(uint64_t groupId, uint64_t targetUserId) {
     storePendingCallback(static_cast<uint32_t>(MessageType::ADD_GROUP_ADMIN_RSP),
         [this](const chatroom::ChatMessage &msg) {
-            emit operationResult(msg.add_group_admin_rsp().success(),
-                                 QString::fromStdString(msg.add_group_admin_rsp().error_message()));
+            const auto &rsp = msg.add_group_admin_rsp();
+            if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
+            emit operationResult(rsp.success(),
+                                 QString::fromStdString(rsp.error_message()));
         });
     buildAndSend(static_cast<uint32_t>(MessageType::ADD_GROUP_ADMIN_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_add_group_admin_req()->set_group_id(groupId);
@@ -376,8 +392,10 @@ void ClientState::addGroupAdmin(uint64_t groupId, uint64_t targetUserId) {
 void ClientState::removeGroupAdmin(uint64_t groupId, uint64_t targetUserId) {
     storePendingCallback(static_cast<uint32_t>(MessageType::REMOVE_GROUP_ADMIN_RSP),
         [this](const chatroom::ChatMessage &msg) {
-            emit operationResult(msg.remove_group_admin_rsp().success(),
-                                 QString::fromStdString(msg.remove_group_admin_rsp().error_message()));
+            const auto &rsp = msg.remove_group_admin_rsp();
+            if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
+            emit operationResult(rsp.success(),
+                                 QString::fromStdString(rsp.error_message()));
         });
     buildAndSend(static_cast<uint32_t>(MessageType::REMOVE_GROUP_ADMIN_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_remove_group_admin_req()->set_group_id(groupId);
@@ -388,8 +406,10 @@ void ClientState::removeGroupAdmin(uint64_t groupId, uint64_t targetUserId) {
 void ClientState::approveJoinGroup(uint64_t groupId, uint64_t targetUserId) {
     storePendingCallback(static_cast<uint32_t>(MessageType::APPROVE_JOIN_GROUP_RSP),
         [this](const chatroom::ChatMessage &msg) {
-            emit operationResult(msg.approve_join_group_rsp().success(),
-                                 QString::fromStdString(msg.approve_join_group_rsp().error_message()));
+            const auto &rsp = msg.approve_join_group_rsp();
+            if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
+            emit operationResult(rsp.success(),
+                                 QString::fromStdString(rsp.error_message()));
         });
     buildAndSend(static_cast<uint32_t>(MessageType::APPROVE_JOIN_GROUP_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_approve_join_group_req()->set_group_id(groupId);
@@ -400,8 +420,10 @@ void ClientState::approveJoinGroup(uint64_t groupId, uint64_t targetUserId) {
 void ClientState::removeGroupMember(uint64_t groupId, uint64_t targetUserId) {
     storePendingCallback(static_cast<uint32_t>(MessageType::REMOVE_GROUP_MEMBER_RSP),
         [this](const chatroom::ChatMessage &msg) {
-            emit operationResult(msg.remove_group_member_rsp().success(),
-                                 QString::fromStdString(msg.remove_group_member_rsp().error_message()));
+            const auto &rsp = msg.remove_group_member_rsp();
+            if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
+            emit operationResult(rsp.success(),
+                                 QString::fromStdString(rsp.error_message()));
         });
     buildAndSend(static_cast<uint32_t>(MessageType::REMOVE_GROUP_MEMBER_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_remove_group_member_req()->set_group_id(groupId);
@@ -412,8 +434,10 @@ void ClientState::removeGroupMember(uint64_t groupId, uint64_t targetUserId) {
 void ClientState::rejectJoinGroup(uint64_t groupId, uint64_t targetUserId) {
     storePendingCallback(static_cast<uint32_t>(MessageType::REJECT_JOIN_GROUP_RSP),
         [this](const chatroom::ChatMessage &msg) {
-            emit operationResult(msg.reject_join_group_rsp().success(),
-                                 QString::fromStdString(msg.reject_join_group_rsp().error_message()));
+            const auto &rsp = msg.reject_join_group_rsp();
+            if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
+            emit operationResult(rsp.success(),
+                                 QString::fromStdString(rsp.error_message()));
         });
     buildAndSend(static_cast<uint32_t>(MessageType::REJECT_JOIN_GROUP_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_reject_join_group_req()->set_group_id(groupId);
@@ -702,6 +726,21 @@ void ClientState::onMessageReceived(const chatroom::ChatMessage &msg) {
         return;
     }
 
+    // group members changed: refresh group list (role/permissions) and current group members
+    if (msgType == MessageType::GROUP_MEMBERS_CHANGED) {
+        queryGroupList();
+        if (current_chat_type_ == ChatType::Group &&
+            current_group_id_ == msg.group_id()) {
+            queryGroupMembers(msg.group_id());
+        }
+        return;
+    }
+
+    // heartbeat response: ignore
+    if (msgType == MessageType::HEARTBEAT_RSP) {
+        return;
+    }
+
     // pending callback match
     auto it = pending_callbacks_.find(msg.type());
     if (it != pending_callbacks_.end()) {
@@ -740,6 +779,7 @@ void ClientState::onDisconnected() {
     user_id_ = 0; username_.clear(); nickname_.clear(); token_.clear();
     contacts_.clear(); current_messages_.clear();
     refresh_timer_->stop();
+    heartbeat_timer_->stop();
     emit logoutDone();
 }
 
@@ -753,6 +793,7 @@ void ClientState::handleLoginResponse(const chatroom::ChatMessage &msg) {
         queryFriends();
         queryGroupList();
         refresh_timer_->start();
+        heartbeat_timer_->start();
         login_timeout_timer_->stop();
     }
     emit loginResult(rsp.success(), QString::fromStdString(rsp.error_message()));
@@ -813,71 +854,117 @@ void ClientState::handleGroupListResponse(const chatroom::ChatMessage &msg) {
         item.name = QString::fromStdString(g.group_name());
         item.group_id = g.group_id();
         item.owner_id = g.owner_id();
+        item.role = QString::fromStdString(g.role());
         contacts_.append(item);
     }
     sortContacts();
     emit contactsUpdated();
 }
 
+void ClientState::emitGroupMembersFromRsp(uint64_t groupId,
+                                          const google::protobuf::RepeatedPtrField<chatroom::GroupMember> &members) {// 响应中的成员列表直接更新
+    QVector<GroupMemberItem> list;
+    for (const auto &m : members) {
+        GroupMemberItem item;
+        item.user_id = m.user_id();
+        item.username = QString::fromStdString(m.username());
+        item.nickname = QString::fromStdString(m.nickname());
+        item.role = QString::fromStdString(m.role());
+        item.join_time = m.join_time();
+        list.append(item);
+    }
+    emit groupMembersReceived(groupId, list);
+}
+
 void ClientState::handleGroupMembersResponse(const chatroom::ChatMessage &msg) {
     const auto &rsp = msg.query_group_members_rsp();
     if (!rsp.success()) return;
 
-    QStringList names;
+    QVector<GroupMemberItem> members;
     for (const auto &m : rsp.members()) {
-        QString name = QString::fromStdString(m.nickname().empty() ? m.username() : m.nickname());
-        QString role = QString::fromStdString(m.role());
-        names.append(name + (role.isEmpty() ? "" : " [" + role + "]"));
+        GroupMemberItem item;
+        item.user_id = m.user_id();
+        item.username = QString::fromStdString(m.username());
+        item.nickname = QString::fromStdString(m.nickname());
+        item.role = QString::fromStdString(m.role());
+        item.join_time = m.join_time();
+        members.append(item);
     }
-    emit groupMembersReceived(current_group_id_, names);
+    emit groupMembersReceived(current_group_id_, members);
 }
 
 void ClientState::handleHistoryResponse(const chatroom::ChatMessage &msg) {
     const auto &rsp = msg.get_history_rsp();
     if (!rsp.success()) return;
 
-    // 服务端历史为最新的在前；与本地已有记录去重后前置插入
-    QSet<uint64_t> existing;
-    for (const auto &m : current_messages_) {
-        if (m.message_id != 0) existing.insert(m.message_id);
-    }
+    // 防止切换聊天后，旧请求的响应污染当前聊天
+    if (current_chat_type_ == ChatType::Private && msg.target_id() != current_target_id_) return;
+    if (current_chat_type_ == ChatType::Group && msg.group_id() != current_group_id_) return;
 
     bool isGroup = (current_chat_type_ == ChatType::Group);
-    QVector<MessageItem> history;
+
+    // 服务端历史为最新的在前，逆序构建为旧 -> 新
+    QVector<MessageItem> serverItems;
     for (int i = rsp.messages_size() - 1; i >= 0; --i) {
         const auto &m = rsp.messages(i);
-        if (existing.contains(m.message_id())) continue;
-
-        QString content = QString::fromStdString(m.content());
-        bool isSelf = (m.sender_id() == user_id_);
-
-        // 本地乐观消息（message_id=0，发送时缓存）被服务端确认后，用服务端版本替换
-        for (int j = 0; j < current_messages_.size(); ++j) {
-            const auto &lm = current_messages_[j];
-            if (lm.message_id == 0 && lm.sender_id == m.sender_id() && lm.is_self == isSelf &&
-                lm.content == content &&
-                std::abs(static_cast<int64_t>(lm.timestamp) - static_cast<int64_t>(m.timestamp())) <= 300) {
-                current_messages_.removeAt(j);
-                break;
-            }
-        }
-
         MessageItem item;
         item.message_id = m.message_id();
         item.sender_id = m.sender_id();
         item.sender_name = QString::fromStdString(m.sender_name());
-        item.content = content;
+        item.content = QString::fromStdString(m.content());
         item.timestamp = m.timestamp();
-        item.is_self = isSelf;
+        item.is_self = (m.sender_id() == user_id_);
         item.status = MessageItem::Sent;
         item.msg_type = MessageItem::Text;
-        history.append(item);
-        MessageStore::instance()->storeMessage(item, isGroup,
+        serverItems.append(item);
+    }
+
+    // 本地乐观消息（message_id=0）被服务端确认后，用真实版本替换
+    for (const auto &si : serverItems) {
+        for (auto &lm : current_messages_) {
+            if (lm.message_id == 0 && lm.sender_id == si.sender_id &&
+                lm.content == si.content &&
+                std::abs(static_cast<int64_t>(lm.timestamp) - static_cast<int64_t>(si.timestamp)) <= 300) {
+                lm.message_id = si.message_id;
+                lm.status = MessageItem::Sent;
+                break;
+            }
+        }
+    }
+
+    // 合并去重（仅新增的入库）
+    QSet<uint64_t> existing;
+    for (const auto &m : current_messages_) {
+        if (m.message_id != 0) existing.insert(m.message_id);
+    }
+    QVector<MessageItem> history;
+    for (const auto &si : serverItems) {
+        if (existing.contains(si.message_id)) continue;
+        history.append(si);
+        existing.insert(si.message_id);
+        MessageStore::instance()->storeMessage(si, isGroup,
                                                current_target_id_, current_group_id_);
     }
 
     if (!history.isEmpty()) {
-        current_messages_ = history + current_messages_;
+        // 新历史全部早于现有第一条（常规场景：上滑加载/进入聊天拉旧记录）→ 前置插入
+        bool allBefore = true;
+        if (!current_messages_.isEmpty()) {
+            const auto &newest = history.last();  // history 已按时间升序
+            if (newest.timestamp > current_messages_.first().timestamp) allBefore = false;
+        }
+        if (allBefore) {
+            current_messages_ = history + current_messages_;
+            emit messagesHistoryPrepended(history.size());
+        } else {
+            // 混合场景（含其他设备发的新消息）：全量按时间合并排序
+            current_messages_ += history;
+            std::sort(current_messages_.begin(), current_messages_.end(),
+                      [](const MessageItem &a, const MessageItem &b) {
+                          if (a.timestamp != b.timestamp) return a.timestamp < b.timestamp;
+                          return a.message_id < b.message_id;
+                      });
+        }
     }
 
     emit messagesUpdated();

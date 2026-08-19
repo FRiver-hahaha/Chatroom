@@ -62,6 +62,11 @@ message ChatMessage {
         GroupOpResponse       remove_group_member_rsp = 49;
         GroupAdminRequest     reject_join_group_req  = 56;
         GroupOpResponse       reject_join_group_rsp  = 57;
+        GroupMembersChangedNotify group_members_changed = 64;
+
+        // 心跳
+        HeartbeatRequest      heartbeat_req          = 62;
+        HeartbeatResponse     heartbeat_rsp          = 63;
 
         // 聊天模块 300-399
         ChatContent           private_chat_req    = 50;
@@ -214,6 +219,8 @@ message GroupOpResponse {
     bool   success        = 1;
     string error_message  = 2;
     uint64 group_id       = 3;
+    bool   pending        = 4;
+    repeated GroupMember members = 5;
 }
 
 message GroupOpRequest {
@@ -239,6 +246,7 @@ message GroupInfo {
     uint64 member_count = 5;
     bool   is_member    = 6;
     bool   is_public    = 7;
+    string role         = 8;  // 当前用户在该群的角色: owner / admin / member
 }
 
 message GroupMembersResponse {
@@ -253,6 +261,17 @@ message GroupMember {
     string nickname   = 3;
     string role       = 4;  // "owner", "admin", "member"
     uint64 join_time  = 5;
+}
+
+message GroupMembersChangedNotify {
+    uint64 group_id = 1;
+}
+
+message HeartbeatRequest {
+}
+
+message HeartbeatResponse {
+    bool success = 1;
 }
 
 // 聊天模块

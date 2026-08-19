@@ -40,6 +40,15 @@ struct ContactItem {
     uint64_t owner_id = 0; // only for groups
 };
 
+// 群组成员信息（role: owner / admin / member / pending 待审批）
+struct GroupMemberItem {
+    uint64_t user_id = 0;
+    QString username;
+    QString nickname;
+    QString role;
+    uint64_t join_time = 0;
+};
+
 Q_DECLARE_METATYPE(MessageItem)
 Q_DECLARE_METATYPE(ContactItem)
 
@@ -121,9 +130,11 @@ signals:
     void contactsUpdated();
     void currentChatChanged();
     void messagesUpdated();
+    // 历史消息已前置插入 count 条（上滑加载/进入聊天拉取历史）
+    void messagesHistoryPrepended(int count);
     void incomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
     void groupMessageReceived(uint64_t groupId, uint64_t senderId, const QString &senderName, const QString &content);
-    void groupMembersReceived(uint64_t groupId, const QStringList &members);
+    void groupMembersReceived(uint64_t groupId, const QVector<GroupMemberItem> &members);
     void blockedUsersReceived(const QVector<ContactItem> &users);
     void systemNotification(const QString &text);
     void friendOnlineChanged(uint64_t userId, bool online);
@@ -138,6 +149,7 @@ private slots:
     void onConnected();
     void onDisconnected();
     void refreshContacts();
+    void sendHeartbeat();
 
 private:
     explicit ClientState(QObject *parent = nullptr);
@@ -160,6 +172,8 @@ private:
     void sortContacts();
     void onLoginTimeout();
     void handleVerifyCodeResponse(const chatroom::ChatMessage &msg);
+    void emitGroupMembersFromRsp(uint64_t groupId,
+                                 const google::protobuf::RepeatedPtrField<chatroom::GroupMember> &members);
 
     ProtocolClient *client_ = nullptr;
     uint64_t user_id_ = 0;
@@ -178,6 +192,7 @@ private:
 
     QTimer *refresh_timer_ = nullptr;
     QTimer *login_timeout_timer_ = nullptr;
+    QTimer *heartbeat_timer_ = nullptr;
 
     static ClientState *instance_;
 };

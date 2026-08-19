@@ -202,8 +202,7 @@ private:
     // Redis 辅助方法
     bool redis_set(const std::string& key, const std::string& value);
     bool redis_set_ex(const std::string& key, const std::string& value, int seconds);
-    bool redis_set_nx_ex(const std::string& key, const std::string& value, int seconds);
-    long long redis_incr(const std::string& key);
+    bool redis_set_nx_ex(const std::string& key, const std::string& value, int seconds);    long long redis_incr(const std::string& key);
     std::string redis_get(const std::string& key);
     bool redis_del(const std::string& key);
     bool redis_hset(const std::string& key, const std::string& field,
@@ -221,6 +220,9 @@ private:
 
     // SQL 工具
     std::string escape_string(MYSQL* conn, const std::string& str);
+    // 查找表中最小空缺 id（从 1 开始），需在 LOCK TABLES 下使用
+    uint64_t next_free_id(MYSQL* conn, const std::string& table,
+                          const std::string& id_col = "id");
 
     // MySQL 连接池 + Redis 上下文
     std::unique_ptr<MySQLConnectionPool> mysql_pool_;

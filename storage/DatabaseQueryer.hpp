@@ -26,6 +26,11 @@ public:
         : storage_(storage), sender_(sender) {}
 
     QueryResult query(SessionState conn_state, const Message& msg) {// 查询总函数
+        if (msg.type == MessageType::HEARTBEAT_REQ) {
+            QueryResult r;
+            r.success = true;
+            return r;
+        }
         int tv = static_cast<int>(msg.type);
         if (tv >= 1 && tv < 100)       return query_account(conn_state, msg);
         if (tv >= 100 && tv < 200)     return query_friend(conn_state, msg);
@@ -363,9 +368,10 @@ private:
         uint64_t tid = msg.target_id;  // 信封 target_id 优先
         if (tid == 0) {
             auto parts = split_two(msg.payload);  // 用户ID \n 邮箱
-            if (!parts.first.empty()) {
-                tid = std::stoull(parts.first);
-            } else {
+            try {
+                if (!parts.first.empty()) tid = std::stoull(parts.first);
+            } catch (...) { tid = 0; }  // 非数字或 "0" 都视为未提供ID
+            if (tid == 0) {
                 std::string email = normalize_email(parts.second);
                 if (!is_valid_email(email)) return fail("邮箱格式不正确");
                 QueryResult u = storage_->get_user_by_email(email);
@@ -442,6 +448,7 @@ private:
             r.success = storage_->request_join_group(gid, msg.sender_id);
             if (r.success) {
                 r.group_id = gid;
+                r.pending = true;
                 r.group_members = storage_->get_group_members(gid);
             } else {
                 r.error_message = "发送加入请求失败";
@@ -454,7 +461,11 @@ private:
         QueryResult r;
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
         r.success = storage_->quit_group(gid, msg.sender_id);
-        if (!r.success) r.error_message = "退出群组失败";
+        if (r.success) {
+            r.group_id = gid;
+            r.group_members = storage_->get_group_members(gid);
+        }
+        else r.error_message = "退出群组失败";
         return r;
     }
 
@@ -477,7 +488,10 @@ private:
         QueryResult r;
         auto [gid, tid] = extract_group_target(msg);
         r.success = (storage_.get()->*op)(gid, msg.sender_id, tid);
-        if (r.success) r.group_id = gid;
+        if (r.success) {
+            r.group_id = gid;
+            r.group_members = storage_->get_group_members(gid);
+        }
         else r.error_message = err;
         return r;
     }
@@ -524,7 +538,7 @@ private:
             std::string name = sender.success ? sender.username : std::to_string(msg.sender_id);
             storage_->save_offline_message(msg.target_id, msg.sender_id, name, msg.payload);
         }
-        return {true, "", 0, "", "", false};
+        return {true, "", false, 0, "", "", false};
     }
 
     QueryResult handle_group_chat_query(const Message& msg) {// 处理群组聊天
@@ -655,7 +669,7 @@ private:
             return r;
         } else {
             storage_->reject_transfer(tid);
-            return {true, "", 0, "", "", false};
+            return {true, "", false, 0, "", "", false};
         }
     }
 

@@ -6,6 +6,10 @@
 #include <QSplitter>
 #include <QLabel>
 #include <QModelIndex>
+#include <QPersistentModelIndex>
+#include <functional>
+#include <tuple>
+#include <vector>
 #include "state/ClientState.h"
 #include "models/ChatMessageModel.h"
 #include "models/ContactListModel.h"
@@ -53,10 +57,11 @@ private slots:
 
     void onContactsUpdated();
     void onMessagesUpdated();
+    void onHistoryPrepended(int count);
     void onChatChanged();
     void onSystemNotification(const QString &text);
     void onIncomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
-    void onGroupMembersReceived(uint64_t groupId, const QStringList &members);
+    void onGroupMembersReceived(uint64_t groupId, const QVector<GroupMemberItem> &members);
     void onBlockedUsersReceived(const QVector<ContactItem> &users);
 
 private:
@@ -65,6 +70,12 @@ private:
     void updateRightPanel();
     void saveScrollState();
     void restoreScrollState();
+    // 群成员管理对话框：按 filter 过滤成员，每个按钮执行对应操作
+    void openGroupMemberDialog(
+        const QString &title,
+        const std::function<bool(const GroupMemberItem &)> &filter,
+        const std::vector<std::tuple<QString, std::function<void(uint64_t)>, QString>> &actions);
+    bool sameMessage(const MessageItem &a, const MessageItem &b);
 
     QSplitter *main_splitter_;
 
@@ -86,7 +97,7 @@ private:
     // 历史记录加载（微信式上滑加载）
     bool history_loading_ = false;
     int history_limit_ = 50;
-    QModelIndex top_visible_index_;
+    QPersistentModelIndex top_visible_index_;
     bool at_bottom_ = true;
 
     QLabel *my_id_label_ = nullptr;

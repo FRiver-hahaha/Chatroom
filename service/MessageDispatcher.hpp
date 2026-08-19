@@ -57,6 +57,7 @@ private:
             case MessageType::LOGOUT_REQ:         handle_logout(conn, msg, result); break;
             case MessageType::DELETE_ACCOUNT_REQ: send_rsp_and_logout(conn, msg, result); break;
             case MessageType::UPDATE_PROFILE_REQ: send_rsp(conn, msg, result); break;
+            case MessageType::HEARTBEAT_REQ:      send_rsp(conn, msg, result); break;
             default: break;
         }
     }
@@ -114,11 +115,11 @@ private:
             case MessageType::CREATE_GROUP_REQ:          send_rsp(conn, msg, result); break;
             case MessageType::DISMISS_GROUP_REQ:         handle_dismiss_group(conn, msg, result); break;
             case MessageType::JOIN_GROUP_REQ:            handle_join_group(conn, msg, result); break;
-            case MessageType::QUIT_GROUP_REQ:            send_rsp(conn, msg, result); break;
+            case MessageType::QUIT_GROUP_REQ:            handle_quit_group(conn, msg, result); break;
             case MessageType::QUERY_GROUP_LIST_REQ:      send_rsp(conn, msg, result); break;
             case MessageType::QUERY_GROUP_MEMBERS_REQ:   send_rsp(conn, msg, result); break;
-            case MessageType::ADD_GROUP_ADMIN_REQ:       send_rsp(conn, msg, result); break;
-            case MessageType::REMOVE_GROUP_ADMIN_REQ:    send_rsp(conn, msg, result); break;
+            case MessageType::ADD_GROUP_ADMIN_REQ:       handle_group_change(conn, msg, result); break;
+            case MessageType::REMOVE_GROUP_ADMIN_REQ:    handle_group_change(conn, msg, result); break;
             case MessageType::APPROVE_JOIN_GROUP_REQ:    handle_approve_join_group(conn, msg, result); break;
             case MessageType::REJECT_JOIN_GROUP_REQ:    handle_reject_join_group(conn, msg, result); break;
             case MessageType::REMOVE_GROUP_MEMBER_REQ:   handle_remove_group_member(conn, msg, result); break;
@@ -126,8 +127,33 @@ private:
         }
     }
 
-    void handle_join_group(Connection* conn, const Message& msg, const QueryResult& result) {// 加入群组
+    void broadcast_group_change(uint64_t group_id, const QueryResult& result, uint64_t skip_user_id = 0) {// 向群内在线成员广播成员变更（跳过操作者，其响应已带最新成员）
+        for (const auto& m : result.group_members) {
+            if (m.user_id == skip_user_id) continue;
+            int fd = lookup_(m.user_id);
+            if (fd < 0) continue;
+            ChatMessage notify;
+            notify.set_type(static_cast<uint32_t>(MessageType::GROUP_MEMBERS_CHANGED));
+            notify.set_group_id(group_id);
+            notify.mutable_group_members_changed()->set_group_id(group_id);
+            std::string s;
+            notify.SerializeToString(&s);
+            sender_(fd, s);
+        }
+    }
+
+    void handle_group_change(Connection* conn, const Message& msg, const QueryResult& result) {// 通用群成员变更：响应 + 广播
         send_rsp(conn, msg, result);
+        if (result.success && result.group_id != 0)
+            broadcast_group_change(result.group_id, result, conn->user_id);
+    }
+
+    void handle_quit_group(Connection* conn, const Message& msg, const QueryResult& result) {// 退出群组
+        handle_group_change(conn, msg, result);
+    }
+
+    void handle_join_group(Connection* conn, const Message& msg, const QueryResult& result) {// 加入群组
+        handle_group_change(conn, msg, result);
         if (!result.success || result.group_id == 0 || result.group_members.empty()) return;
         for (const auto& m : result.group_members) {
             if (m.user_id == conn->user_id) continue;
@@ -137,25 +163,25 @@ private:
     }
 
     void handle_approve_join_group(Connection* conn, const Message& msg, const QueryResult& result) {// 申请加入群组
-        send_rsp(conn, msg, result);
+        handle_group_change(conn, msg, result);
         if (result.success && msg.target_id != 0)
             notify_target(msg.target_id, "[系统通知] 你已被批准加入群组 " + std::to_string(result.group_id));
     }
 
     void handle_remove_group_member(Connection* conn, const Message& msg, const QueryResult& result) {// 被移除群组
-        send_rsp(conn, msg, result);
+        handle_group_change(conn, msg, result);
         if (result.success && msg.target_id != 0)
             notify_target(msg.target_id, "[系统通知] 你已被管理员移出群组 " + std::to_string(msg.group_id));
     }
 
     void handle_reject_join_group(Connection* conn, const Message& msg, const QueryResult& result) {// 被拒绝加入群组
-        send_rsp(conn, msg, result);
+        handle_group_change(conn, msg, result);
         if (result.success && msg.target_id != 0)
             notify_target(msg.target_id, "[系统通知] 你加入群组 " + std::to_string(msg.group_id) + " 的请求已被拒绝");
     }
 
     void handle_dismiss_group(Connection* conn, const Message& msg, const QueryResult& result) {// 解散群组
-        send_rsp(conn, msg, result);
+        handle_group_change(conn, msg, result);
         if (!result.success || result.group_members.empty()) return;
         for (const auto& m : result.group_members) {
             if (m.user_id == conn->user_id) continue;

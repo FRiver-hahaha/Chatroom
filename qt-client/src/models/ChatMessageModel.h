@@ -26,6 +26,8 @@ public:
 
     void setMessages(const QVector<MessageItem> &messages);
     void appendMessage(const MessageItem &msg);
+    void prependMessages(const QVector<MessageItem> &messages);
+    const MessageItem &messageAt(int row) const;
     void updateLastStatus(MessageItem::Status status);
 
 private:

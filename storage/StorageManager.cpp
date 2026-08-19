@@ -178,6 +178,24 @@ std::string StorageManager::escape_string(MYSQL* conn, const std::string& str) {
     return std::string(buf.data());
 }
 
+uint64_t StorageManager::next_free_id(MYSQL* conn, const std::string& table,
+                                      const std::string& id_col) {// 最小空缺 id（从 1 开始，不跳过）
+    std::string q = "SELECT " + id_col + " FROM " + table + " ORDER BY " + id_col + " ASC";
+    if (mysql_query(conn, q.c_str()) != 0) return 0;
+    MYSQL_RES* res = mysql_store_result(conn);
+    uint64_t next = 1;
+    if (res) {
+        MYSQL_ROW row;
+        while ((row = mysql_fetch_row(res))) {
+            uint64_t cur = row[0] ? std::stoull(row[0]) : 0;
+            if (cur > next) break;  // 找到空缺
+            if (cur == next) ++next;
+        }
+        mysql_free_result(res);
+    }
+    return next;
+}
+
 std::string StorageManager::generate_salt() {// 产生盐值
     unsigned char buf[32];
     RAND_bytes(buf, sizeof(buf));
@@ -369,15 +387,28 @@ QueryResult StorageManager::create_user(const std::string& username,
     std::string phone_sql = phone.empty() ? "NULL" : ("'" + escape_string(conn, phone) + "'");
 
     // 始终新建用户，不复用已注销账号的 ID，避免残留旧数据随 ID 复活
-    std::string q = "INSERT INTO users (username, password_hash, salt, nickname, email, phone) VALUES ('"
-                   + eu + "', '" + hash + "', '" + salt + "', '" + en + "', "
-                   + email_sql + ", " + phone_sql + ")";
-    if (mysql_query(conn, q.c_str()) != 0) {
+    std::string q;
+    if (mysql_query(conn, "LOCK TABLES users WRITE") != 0) {
+        mysql_pool_->release(conn);
+        result.success = false; result.error_message = "数据库锁表失败"; return result;
+    }
+    uint64_t free_id = next_free_id(conn, "users");
+    if (free_id == 0) {
+        mysql_query(conn, "UNLOCK TABLES");
+        mysql_pool_->release(conn);
+        result.success = false; result.error_message = "分配用户ID失败"; return result;
+    }
+    q = "INSERT INTO users (id, username, password_hash, salt, nickname, email, phone) VALUES ("
+                   + std::to_string(free_id) + ", '" + eu + "', '" + hash + "', '" + salt
+                   + "', '" + en + "', " + email_sql + ", " + phone_sql + ")";
+    int rc = mysql_query(conn, q.c_str());
+    mysql_query(conn, "UNLOCK TABLES");
+    if (rc != 0) {
         result.success = false;
         result.error_message = std::string("创建用户失败: ") + mysql_error(conn);
         mysql_pool_->release(conn); return result;
     }
-    uint64_t user_id = mysql_insert_id(conn);
+    uint64_t user_id = free_id;
     mysql_pool_->release(conn);
 
     result.success = true; result.user_id = user_id;
@@ -641,6 +672,45 @@ bool StorageManager::delete_user(uint64_t user_id) {// 注销用户
         }
     }
 
+    // 收集磁盘文件路径（删行前）
+    std::vector<std::string> file_paths;
+    {
+        std::string sel = "SELECT file_path FROM files WHERE uploader_id="
+                         + uid + " OR target_id=" + uid;
+        if (mysql_query(conn, sel.c_str()) == 0) {
+            MYSQL_RES* res = mysql_store_result(conn);
+            MYSQL_ROW row;
+            while (res && (row = mysql_fetch_row(res)))
+                file_paths.push_back(row[0] ? row[0] : "");
+            if (res) mysql_free_result(res);
+        }
+    }
+
+    // 收集用户所属群（清缓存用，删成员行前）
+    std::vector<uint64_t> joined_groups;
+    {
+        std::string sel = "SELECT group_id FROM group_members WHERE user_id=" + uid;
+        if (mysql_query(conn, sel.c_str()) == 0) {
+            MYSQL_RES* res = mysql_store_result(conn);
+            MYSQL_ROW row;
+            while (res && (row = mysql_fetch_row(res)))
+                joined_groups.push_back(std::stoull(row[0]));
+            if (res) mysql_free_result(res);
+        }
+    }
+
+    // 收集所有群（清除该用户在各群待审批列表中的残留）
+    std::vector<uint64_t> all_groups;
+    {
+        if (mysql_query(conn, "SELECT id FROM chat_groups") == 0) {
+            MYSQL_RES* res = mysql_store_result(conn);
+            MYSQL_ROW row;
+            while (res && (row = mysql_fetch_row(res)))
+                all_groups.push_back(std::stoull(row[0]));
+            if (res) mysql_free_result(res);
+        }
+    }
+
     std::string del_msg = "DELETE FROM messages WHERE sender_id=" + uid
                          + " OR target_id=" + uid;
     mysql_query(conn, del_msg.c_str());
@@ -649,6 +719,30 @@ bool StorageManager::delete_user(uint64_t user_id) {// 注销用户
     mysql_query(conn, del_friends.c_str());
     std::string del_gm = "DELETE FROM group_members WHERE user_id=" + uid;
     mysql_query(conn, del_gm.c_str());
+
+    // 解散该用户创建的群组：清理群消息、成员关系、群组本身与缓存
+    std::vector<uint64_t> owned_groups;
+    {
+        std::string sel = "SELECT id FROM chat_groups WHERE owner_id=" + uid;
+        if (mysql_query(conn, sel.c_str()) == 0) {
+            MYSQL_RES* res = mysql_store_result(conn);
+            MYSQL_ROW row;
+            while (res && (row = mysql_fetch_row(res)))
+                owned_groups.push_back(std::stoull(row[0]));
+            if (res) mysql_free_result(res);
+        }
+    }
+    for (uint64_t gid : owned_groups) {
+        std::string gid_s = std::to_string(gid);
+        std::string del_gmsg = "DELETE FROM messages WHERE group_id=" + gid_s;
+        mysql_query(conn, del_gmsg.c_str());
+        std::string del_gmemb = "DELETE FROM group_members WHERE group_id=" + gid_s;
+        mysql_query(conn, del_gmemb.c_str());
+        std::string del_g = "DELETE FROM chat_groups WHERE id=" + gid_s;
+        mysql_query(conn, del_g.c_str());
+        redis_del("chatroom:group:" + gid_s + ":members");
+        redis_del("chatroom:group:" + gid_s + ":join_requests");
+    }
     std::string del_files = "DELETE FROM files WHERE uploader_id=" + uid
                            + " OR target_id=" + uid;
     mysql_query(conn, del_files.c_str());
@@ -663,12 +757,27 @@ bool StorageManager::delete_user(uint64_t user_id) {// 注销用户
     mysql_pool_->release(conn);
 
     // 清理 Redis
+    std::string token = redis_hget("chatroom:session:" + uid, "token");
+    if (!token.empty()) redis_del("chatroom:token:" + token);
     redis_del("chatroom:session:" + uid);
     redis_srem("chatroom:online", uid);
     redis_del("chatroom:user:" + uid + ":friends");
     redis_del("chatroom:user:" + uid + ":groups");
     redis_del("chatroom:offline_msg:" + uid);
     redis_del("chatroom:transfer:pending:" + uid);
+
+    // 清理所属群缓存与该用户在群中的待审批残留
+    for (uint64_t gid : joined_groups) {
+        redis_del("chatroom:group:" + std::to_string(gid) + ":members");
+    }
+    for (uint64_t gid : all_groups) {
+        redis_srem("chatroom:group:" + std::to_string(gid) + ":join_requests", uid);
+    }
+
+    // 清理磁盘上的已接收/已发送文件
+    for (const auto &path : file_paths) {
+        if (!path.empty()) remove(path.c_str());
+    }
 
     // 清理文件传输的分片数据与 Redis 键
     for (uint64_t tid : transfer_ids) {
@@ -693,11 +802,23 @@ bool StorageManager::clear_session(uint64_t user_id) {// 清除用户会话
 bool StorageManager::add_friend(uint64_t user_id, uint64_t friend_id) {// 添加好友
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
-    std::string q1 = "INSERT IGNORE INTO friendships (user_id, friend_id) VALUES ("
-                    + std::to_string(user_id) + ", " + std::to_string(friend_id) + ")";
-    std::string q2 = "INSERT IGNORE INTO friendships (user_id, friend_id) VALUES ("
-                    + std::to_string(friend_id) + ", " + std::to_string(user_id) + ")";
+    if (mysql_query(conn, "LOCK TABLES friendships WRITE") != 0) {
+        mysql_pool_->release(conn); return false;
+    }
+    uint64_t id1 = next_free_id(conn, "friendships");
+    uint64_t id2 = (id1 == 0) ? 0 : next_free_id(conn, "friendships", "id");
+    if (id1 == 0 || id2 == 0) {
+        mysql_query(conn, "UNLOCK TABLES");
+        mysql_pool_->release(conn); return false;
+    }
+    std::string q1 = "INSERT IGNORE INTO friendships (id, user_id, friend_id) VALUES ("
+                    + std::to_string(id1) + ", " + std::to_string(user_id)
+                    + ", " + std::to_string(friend_id) + ")";
+    std::string q2 = "INSERT IGNORE INTO friendships (id, user_id, friend_id) VALUES ("
+                    + std::to_string(id2) + ", " + std::to_string(friend_id)
+                    + ", " + std::to_string(user_id) + ")";
     bool ok = (mysql_query(conn, q1.c_str()) == 0 && mysql_query(conn, q2.c_str()) == 0);
+    mysql_query(conn, "UNLOCK TABLES");
     mysql_pool_->release(conn);
     redis_del("chatroom:user:" + std::to_string(user_id) + ":friends");// 保证缓存的一致性，因此在这里进行删除缓存
     redis_del("chatroom:user:" + std::to_string(friend_id) + ":friends");
@@ -905,19 +1026,37 @@ uint64_t StorageManager::create_group(const std::string& group_name,
     }
 
     if (group_id == 0) {
-        std::string q = "INSERT INTO chat_groups (group_name, description, owner_id, is_public) VALUES ('"
-                       + eg + "', '" + ed + "', " + std::to_string(owner_id)
-                       + ", " + (is_public ? "TRUE" : "FALSE") + ")";
-        if (mysql_query(conn, q.c_str()) != 0) { mysql_pool_->release(conn); return 0; }
-        group_id = mysql_insert_id(conn);
+        if (mysql_query(conn, "LOCK TABLES chat_groups WRITE") != 0) {
+            mysql_pool_->release(conn); return 0;
+        }
+        uint64_t free_id = next_free_id(conn, "chat_groups");
+        std::string q = "INSERT INTO chat_groups (id, group_name, description, owner_id, is_public) VALUES ("
+                       + std::to_string(free_id) + ", '" + eg + "', '" + ed + "', "
+                       + std::to_string(owner_id) + ", " + (is_public ? "TRUE" : "FALSE") + ")";
+        int rc = mysql_query(conn, q.c_str());
+        mysql_query(conn, "UNLOCK TABLES");
+        if (rc != 0 || free_id == 0) { mysql_pool_->release(conn); return 0; }
+        group_id = free_id;
     }
 
     std::string del_old = "DELETE FROM group_members WHERE group_id=" + std::to_string(group_id);
     mysql_query(conn, del_old.c_str());
-    std::string mq = "INSERT INTO group_members (group_id, user_id, role) VALUES ("
-                    + std::to_string(group_id) + ", " + std::to_string(owner_id) + ", 'owner')";
-    mysql_query(conn, mq.c_str());
+    std::string mq;
+    if (mysql_query(conn, "LOCK TABLES group_members WRITE") != 0) {
+        mysql_pool_->release(conn); return 0;
+    }
+    uint64_t mid = next_free_id(conn, "group_members");
+    if (mid == 0) {
+        mysql_query(conn, "UNLOCK TABLES");
+        mysql_pool_->release(conn); return 0;
+    }
+    mq = "INSERT INTO group_members (id, group_id, user_id, role) VALUES ("
+        + std::to_string(mid) + ", " + std::to_string(group_id) + ", "
+        + std::to_string(owner_id) + ", 'owner')";
+    int mrc = mysql_query(conn, mq.c_str());
+    mysql_query(conn, "UNLOCK TABLES");
     mysql_pool_->release(conn);
+    if (mrc != 0) return 0;
     redis_del("chatroom:user:" + std::to_string(owner_id) + ":groups");
     return group_id;
 }
@@ -949,9 +1088,15 @@ bool StorageManager::join_group(uint64_t group_id, uint64_t user_id) {// 加入�
     if (is_group_member(group_id, user_id)) return false;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
-    std::string q = "INSERT INTO group_members (group_id, user_id, role) VALUES ("
-                   + std::to_string(group_id) + ", " + std::to_string(user_id) + ", 'member')";
-    bool ok = (mysql_query(conn, q.c_str()) == 0);
+    if (mysql_query(conn, "LOCK TABLES group_members WRITE") != 0) {
+        mysql_pool_->release(conn); return false;
+    }
+    uint64_t mid = next_free_id(conn, "group_members");
+    std::string q = "INSERT INTO group_members (id, group_id, user_id, role) VALUES ("
+                   + std::to_string(mid) + ", " + std::to_string(group_id) + ", "
+                   + std::to_string(user_id) + ", 'member')";
+    bool ok = (mid != 0 && mysql_query(conn, q.c_str()) == 0);
+    mysql_query(conn, "UNLOCK TABLES");
     if (ok) {
         std::string up = "UPDATE chat_groups SET member_count = member_count + 1 WHERE id="
                         + std::to_string(group_id);
@@ -1211,7 +1356,7 @@ std::vector<QueryResult::GroupInfo> StorageManager::get_user_groups(uint64_t use
     std::vector<QueryResult::GroupInfo> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
-    std::string q = "SELECT g.id, g.group_name, g.description, g.owner_id, g.member_count, g.is_public "
+    std::string q = "SELECT g.id, g.group_name, g.description, g.owner_id, g.member_count, g.is_public, gm.role "
                     "FROM chat_groups g JOIN group_members gm ON g.id = gm.group_id "
                     "WHERE gm.user_id=" + std::to_string(user_id);
     if (mysql_query(conn, q.c_str()) != 0) { mysql_pool_->release(conn); return result; }
@@ -1227,6 +1372,7 @@ std::vector<QueryResult::GroupInfo> StorageManager::get_user_groups(uint64_t use
         info.member_count = std::stoull(row[4]);
         info.is_member   = true;
         info.is_public   = row[5] ? (std::stoi(row[5]) != 0) : true;
+        info.role        = row[6] ? row[6] : "member";
         result.push_back(info);
     }
     mysql_free_result(res);
@@ -1279,10 +1425,16 @@ bool StorageManager::save_message(uint64_t sender_id, uint64_t target_id,
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ec = escape_string(conn, content);
-    std::string q = "INSERT INTO messages (sender_id, target_id, message_type, body) VALUES ("
-                   + std::to_string(sender_id) + ", " + std::to_string(target_id) + ", "
+    if (mysql_query(conn, "LOCK TABLES messages WRITE") != 0) {
+        mysql_pool_->release(conn); return false;
+    }
+    uint64_t mid = next_free_id(conn, "messages");
+    std::string q = "INSERT INTO messages (id, sender_id, target_id, message_type, body) VALUES ("
+                   + std::to_string(mid) + ", " + std::to_string(sender_id) + ", "
+                   + std::to_string(target_id) + ", "
                    + std::to_string(message_type) + ", '" + ec + "')";
-    bool ok = (mysql_query(conn, q.c_str()) == 0);
+    bool ok = (mid != 0 && mysql_query(conn, q.c_str()) == 0);
+    mysql_query(conn, "UNLOCK TABLES");
     mysql_pool_->release(conn);
     return ok;
 }
@@ -1292,10 +1444,16 @@ bool StorageManager::save_group_message(uint64_t group_id, uint64_t sender_id,
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ec = escape_string(conn, content);
-    std::string q = "INSERT INTO messages (sender_id, group_id, message_type, body) VALUES ("
-                   + std::to_string(sender_id) + ", " + std::to_string(group_id)
+    if (mysql_query(conn, "LOCK TABLES messages WRITE") != 0) {
+        mysql_pool_->release(conn); return false;
+    }
+    uint64_t mid = next_free_id(conn, "messages");
+    std::string q = "INSERT INTO messages (id, sender_id, group_id, message_type, body) VALUES ("
+                   + std::to_string(mid) + ", " + std::to_string(sender_id) + ", "
+                   + std::to_string(group_id)
                    + ", 302, '" + ec + "')";
-    bool ok = (mysql_query(conn, q.c_str()) == 0);
+    bool ok = (mid != 0 && mysql_query(conn, q.c_str()) == 0);
+    mysql_query(conn, "UNLOCK TABLES");
     mysql_pool_->release(conn);
     return ok;
 }
@@ -1400,16 +1558,23 @@ uint64_t StorageManager::create_transfer(uint64_t sender_id, uint64_t receiver_i
     if (!conn) return 0;
     std::string ef = escape_string(conn, file_name);
     std::string efh = escape_string(conn, file_hash);
-    std::string q = "INSERT INTO file_transfers (sender_id, receiver_id, file_name, file_size, total_chunks, file_hash) VALUES ("
-                   + std::to_string(sender_id) + ", " + std::to_string(receiver_id) + ", '"
+    if (mysql_query(conn, "LOCK TABLES file_transfers WRITE") != 0) {
+        mysql_pool_->release(conn); return 0;
+    }
+    uint64_t free_id = next_free_id(conn, "file_transfers", "transfer_id");
+    std::string q = "INSERT INTO file_transfers (transfer_id, sender_id, receiver_id, file_name, file_size, total_chunks, file_hash) VALUES ("
+                   + std::to_string(free_id) + ", " + std::to_string(sender_id) + ", "
+                   + std::to_string(receiver_id) + ", '"
                    + ef + "', " + std::to_string(file_size) + ", "
                    + std::to_string(total_chunks) + ", '" + efh + "')";
-    if (mysql_query(conn, q.c_str()) != 0) {
+    int rc = mysql_query(conn, q.c_str());
+    mysql_query(conn, "UNLOCK TABLES");
+    if (rc != 0 || free_id == 0) {
         LOG(ERROR) << "[StorageManager] create_transfer INSERT failed: "
                   << mysql_error(conn) ;
         mysql_pool_->release(conn); return 0;
     }
-    uint64_t tid = mysql_insert_id(conn);
+    uint64_t tid = free_id;
     mysql_pool_->release(conn);
     mkdir(FILE_STORAGE_BASE, 0755);
     std::string dir = std::string(FILE_STORAGE_BASE) + "/transfer_" + std::to_string(tid);

@@ -126,6 +126,7 @@ void MainWindow::setupConnections() {
 
     connect(state, &ClientState::contactsUpdated, this, &MainWindow::onContactsUpdated);
     connect(state, &ClientState::messagesUpdated, this, &MainWindow::onMessagesUpdated);
+    connect(state, &ClientState::messagesHistoryPrepended, this, &MainWindow::onHistoryPrepended);
     connect(state, &ClientState::currentChatChanged, this, &MainWindow::onChatChanged);
     connect(state, &ClientState::systemNotification, this, &MainWindow::onSystemNotification);
     connect(state, &ClientState::incomingMessage, this, &MainWindow::onIncomingMessage);
@@ -203,7 +204,7 @@ void MainWindow::onContactsUpdated() {
 void MainWindow::saveScrollState() {
     auto *bar = message_list_->verticalScrollBar();
     at_bottom_ = (bar->value() + bar->pageStep() >= bar->maximum() - 20);
-    top_visible_index_ = message_list_->indexAt(QPoint(2, 2));
+    top_visible_index_ = QPersistentModelIndex(message_list_->indexAt(QPoint(2, 2)));
 }
 
 void MainWindow::restoreScrollState() {
@@ -214,17 +215,37 @@ void MainWindow::restoreScrollState() {
     }
 }
 
+bool MainWindow::sameMessage(const MessageItem &a, const MessageItem &b) {
+    return a.message_id == b.message_id && a.sender_id == b.sender_id &&
+           a.content == b.content && a.timestamp == b.timestamp;
+}
+
 void MainWindow::onMessagesUpdated() {
     auto *state = ClientState::instance();
     const auto &msgs = state->currentChatMessages();
 
     saveScrollState();
 
-    // 增量追加，避免全量 reset 造成滚动抖动，保证流畅体验
-    if (msgs.size() >= message_model_->rowCount()) {
-        for (int i = message_model_->rowCount(); i < msgs.size(); ++i)
-            message_model_->appendMessage(msgs[i]);
-    } else {
+    int modelCount = message_model_->rowCount();
+    int total = msgs.size();
+
+    if (total > modelCount) {
+        // 模型前 modelCount 条与 state 一致 → 新消息追加在末尾
+        bool samePrefix = true;
+        for (int i = 0; i < modelCount; ++i) {
+            if (!sameMessage(msgs[i], message_model_->messageAt(i))) {
+                samePrefix = false;
+                break;
+            }
+        }
+        if (samePrefix) {
+            for (int i = modelCount; i < total; ++i)
+                message_model_->appendMessage(msgs[i]);
+        } else {
+            // 顺序已变化（历史合并/重排），全量重置
+            message_model_->setMessages(msgs);
+        }
+    } else if (total < modelCount) {
         message_model_->setMessages(msgs);
     }
 
@@ -232,8 +253,20 @@ void MainWindow::onMessagesUpdated() {
     restoreScrollState();
 }
 
+void MainWindow::onHistoryPrepended(int count) {
+    if (count <= 0) return;
+    auto *state = ClientState::instance();
+    const auto &msgs = state->currentChatMessages();
+    saveScrollState();
+    message_model_->prependMessages(msgs.mid(0, count));
+    restoreScrollState();
+}
+
 void MainWindow::onChatChanged() {
-    onMessagesUpdated();
+    // 切换聊天时全量重置，避免残留上一个会话的消息
+    auto *state = ClientState::instance();
+    message_model_->setMessages(state->currentChatMessages());
+    message_list_->scrollToBottom();
 }
 
 void MainWindow::onSystemNotification(const QString &text) {
@@ -530,7 +563,14 @@ void MainWindow::onDeleteAccount() {
 
 void MainWindow::onQuitGroup() {
     auto *state = ClientState::instance();
-    state->quitGroup(state->currentGroupId());
+    if (state->currentChatType() != ChatType::Group) {
+        QMessageBox::information(this, "提示", "请先选择一个群组聊天");
+        return;
+    }
+    auto ret = QMessageBox::question(this, "确认", "确定要退出该群组吗？");
+    if (ret == QMessageBox::Yes) {
+        state->quitGroup(state->currentGroupId());
+    }
 }
 
 void MainWindow::onViewMembers() {
@@ -538,50 +578,161 @@ void MainWindow::onViewMembers() {
     state->queryGroupMembers(state->currentGroupId());
 }
 
-void MainWindow::onGroupMembersReceived(uint64_t groupId, const QStringList &members) {
+void MainWindow::openGroupMemberDialog(
+    const QString &title,
+    const std::function<bool(const GroupMemberItem &)> &filter,
+    const std::vector<std::tuple<QString, std::function<void(uint64_t)>, QString>> &actions) {
+    auto *state = ClientState::instance();
+    if (state->currentChatType() != ChatType::Group) {
+        QMessageBox::information(this, "提示", "请先选择一个群组聊天");
+        return;
+    }
+
+    state->queryGroupMembers(state->currentGroupId());
+    auto *conn = new QMetaObject::Connection();
+    *conn = connect(state, &ClientState::groupMembersReceived, this,
+        [this, conn, title, filter, actions](uint64_t, const QVector<GroupMemberItem> &members) {
+            disconnect(*conn);
+            delete conn;
+
+            QVector<GroupMemberItem> filtered;
+            for (const auto &m : members) {
+                if (filter(m)) filtered.append(m);
+            }
+            if (filtered.isEmpty()) {
+                QMessageBox::information(this, title, "没有符合条件的成员");
+                return;
+            }
+
+            auto *dlg = new QDialog(this);
+            dlg->setWindowTitle(title);
+            dlg->setMinimumWidth(340);
+
+            auto *layout = new QVBoxLayout(dlg);
+            auto *list = new QListWidget(dlg);
+            QMap<QString, uint64_t> idByText;
+            for (const auto &m : filtered) {
+                QString role = m.role;
+                if (role == "owner") role = "群主";
+                else if (role == "admin") role = "管理员";
+                else if (role == "pending") role = "待审批";
+                QString name = m.nickname.isEmpty() ? m.username : m.nickname;
+                QString text = QString("%1 (ID: %2) [%3]")
+                    .arg(name).arg(m.user_id).arg(role);
+                idByText.insert(text, m.user_id);
+                list->addItem(text);
+            }
+            layout->addWidget(list);
+
+            auto *btnRow = new QHBoxLayout();
+            auto *cancelBtn = new QPushButton("关闭", dlg);
+            btnRow->addWidget(cancelBtn);
+            for (const auto &[btnText, action, successMsg] : actions) {
+                auto *btn = new QPushButton(btnText, dlg);
+                btnRow->addWidget(btn);
+                connect(btn, &QPushButton::clicked, this,
+                    [this, dlg, list, idByText, action, successMsg]() {
+                        auto *item = list->currentItem();
+                        if (!item) {
+                            QMessageBox::information(dlg, "提示", "请先选择一个成员");
+                            return;
+                        }
+                        uint64_t uid = idByText.value(item->text());
+                        auto *state = ClientState::instance();
+                        auto *opConn = new QMetaObject::Connection();
+                        *opConn = connect(state, &ClientState::operationResult, this,
+                            [this, dlg, opConn, state, successMsg](bool ok, const QString &err) {
+                                disconnect(*opConn);
+                                delete opConn;
+                                if (ok) {
+                                    // 响应已携带最新成员列表，ClientState 已发出 groupMembersReceived
+                                    QMessageBox::information(dlg, "提示", successMsg);
+                                } else {
+                                    QMessageBox::warning(dlg, "提示", "操作失败: " + err);
+                                }
+                            });
+                        action(uid);
+                    });
+            }
+            layout->addLayout(btnRow);
+
+            dlg->exec();
+            dlg->deleteLater();
+        });
+}
+
+void MainWindow::onApproveJoin() {
+    openGroupMemberDialog("审批入群申请",
+        [](const GroupMemberItem &m) { return m.role == "pending"; },
+        {
+            {QString::fromUtf8("批准加入"),
+             [](uint64_t uid) { ClientState::instance()->approveJoinGroup(
+                 ClientState::instance()->currentGroupId(), uid); },
+             QString::fromUtf8("已批准该用户加入群组")},
+            {QString::fromUtf8("拒绝申请"),
+             [](uint64_t uid) { ClientState::instance()->rejectJoinGroup(
+                 ClientState::instance()->currentGroupId(), uid); },
+             QString::fromUtf8("已拒绝该用户的入群申请")},
+        });
+}
+
+void MainWindow::onRemoveMember() {
+    auto *state = ClientState::instance();
+    openGroupMemberDialog("移除群成员",
+        [state](const GroupMemberItem &m) {
+            // 不能移除自己，不能移除群主
+            return m.user_id != state->userId() && m.role != "owner";
+        },
+        {
+            {QString::fromUtf8("移除成员"),
+             [](uint64_t uid) { ClientState::instance()->removeGroupMember(
+                 ClientState::instance()->currentGroupId(), uid); },
+             QString::fromUtf8("已将该成员移出群组")},
+        });
+}
+
+void MainWindow::onAddAdmin() {
+    auto *state = ClientState::instance();
+    openGroupMemberDialog("设置群管理员",
+        [state](const GroupMemberItem &m) {
+            return m.role == "member" && m.user_id != state->userId();
+        },
+        {
+            {QString::fromUtf8("设为管理员"),
+             [](uint64_t uid) { ClientState::instance()->addGroupAdmin(
+                 ClientState::instance()->currentGroupId(), uid); },
+             QString::fromUtf8("已设为群管理员")},
+        });
+}
+
+void MainWindow::onRemoveAdmin() {
+    openGroupMemberDialog("取消群管理员",
+        [](const GroupMemberItem &m) { return m.role == "admin"; },
+        {
+            {QString::fromUtf8("取消管理员"),
+             [](uint64_t uid) { ClientState::instance()->removeGroupAdmin(
+                 ClientState::instance()->currentGroupId(), uid); },
+             QString::fromUtf8("已取消该成员的管理员身份")},
+        });
+}
+
+void MainWindow::onGroupMembersReceived(uint64_t groupId, const QVector<GroupMemberItem> &members) {
     Q_UNUSED(groupId)
-    info_panel_->showGroupMembers(members);
+    QStringList names;
+    for (const auto &m : members) {
+        QString role = m.role;
+        if (role == "owner") role = "群主";
+        else if (role == "admin") role = "管理员";
+        else if (role == "pending") role = "待审批";
+        QString name = m.nickname.isEmpty() ? m.username : m.nickname;
+        names.append(name + (role.isEmpty() ? "" : " [" + role + "]"));
+    }
+    info_panel_->showGroupMembers(names);
 }
 
 void MainWindow::onDismissGroup() {
     auto ret = QMessageBox::question(this, "确认", "确定要解散该群组吗？所有聊天记录将被删除。");
     if (ret == QMessageBox::Yes) {
         ClientState::instance()->dismissGroup(ClientState::instance()->currentGroupId());
-    }
-}
-
-void MainWindow::onApproveJoin() {
-    bool ok;
-    uint64_t uid = QInputDialog::getText(this, "批准加入", "输入用户ID:").toULongLong(&ok);
-    if (ok && uid > 0) {
-        ClientState::instance()->approveJoinGroup(
-            ClientState::instance()->currentGroupId(), uid);
-    }
-}
-
-void MainWindow::onRemoveMember() {
-    bool ok;
-    uint64_t uid = QInputDialog::getText(this, "移除成员", "输入用户ID:").toULongLong(&ok);
-    if (ok && uid > 0) {
-        ClientState::instance()->removeGroupMember(
-            ClientState::instance()->currentGroupId(), uid);
-    }
-}
-
-void MainWindow::onAddAdmin() {
-    bool ok;
-    uint64_t uid = QInputDialog::getText(this, "添加管理员", "输入用户ID:").toULongLong(&ok);
-    if (ok && uid > 0) {
-        ClientState::instance()->addGroupAdmin(
-            ClientState::instance()->currentGroupId(), uid);
-    }
-}
-
-void MainWindow::onRemoveAdmin() {
-    bool ok;
-    uint64_t uid = QInputDialog::getText(this, "移除管理员", "输入用户ID:").toULongLong(&ok);
-    if (ok && uid > 0) {
-        ClientState::instance()->removeGroupAdmin(
-            ClientState::instance()->currentGroupId(), uid);
     }
 }
