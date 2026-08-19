@@ -11,7 +11,7 @@
 set -e
 
 SERVER_IP="${1:-10.30.0.114}"
-REPO_URL="${CHATROOM_REPO:-https://github.com/FRiver-hahaha/Chatroom.git}"
+REPO_URL="${CHATROOM_REPO:-git@github.com:FRiver-hahaha/Chatroom.git}"
 
 echo "[1/4] 安装编译依赖..."
 sudo apt update
