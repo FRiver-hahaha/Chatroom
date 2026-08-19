@@ -15,6 +15,13 @@ qt-client/.qmake.stash
 CMakeLists.txt.user
 .qmake.stash
 
+# qmake 遗留构建产物（当前构建系统为 CMake）
+qt-client/Makefile
+qt-client/ChatroomClient
+qt-client/ChatroomClient.pro
+qt-client/moc_*.cpp
+qt-client/moc_predefs.h
+
 # ==================== 运行时产生的数据文件 ====================
 dump.rdb
 logs/
