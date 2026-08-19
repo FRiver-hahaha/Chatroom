@@ -51,6 +51,7 @@ add_executable(server
     network/server.cpp
     network/threadPool.cpp
     storage/StorageManager.cpp
+    sender/VerificationSender.cpp
     ${PROTO_SRCS}
 )
 
@@ -70,6 +71,7 @@ target_link_libraries(server PRIVATE
     ${HIREDIS_LIBRARIES}
     ${MYSQLCLIENT_LIBRARIES}
     OpenSSL::Crypto
+    OpenSSL::SSL
     Threads::Threads
     glog::glog
 )

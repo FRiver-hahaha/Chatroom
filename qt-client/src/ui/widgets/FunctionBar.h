@@ -4,6 +4,8 @@
 #include <QPushButton>
 #include <QString>
 
+class QToolButton;
+
 class FunctionBar : public QWidget {
     Q_OBJECT
 public:
@@ -15,6 +17,8 @@ signals:
     void addFriendClicked();
     void deleteFriendClicked();
     void blockFriendClicked();
+    void unblockFriendClicked();
+    void queryBlockedClicked();
     void friendRequestsClicked();
     void createGroupClicked();
     void joinGroupClicked();
@@ -35,7 +39,7 @@ signals:
 private:
     QPushButton *add_friend_btn_;
     QPushButton *delete_friend_btn_;
-    QPushButton *block_btn_;
+    QToolButton *block_btn_;
     QPushButton *friend_requests_btn_;
     QPushButton *create_group_btn_;
     QPushButton *join_group_btn_;

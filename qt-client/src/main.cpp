@@ -79,14 +79,39 @@ int main(int argc, char *argv[]) {
 
     // register
     QObject::connect(loginWindow, &LoginWindow::registerRequested, state,
-        [state, ensureConnected](const QString &username, const QString &password, const QString &nickname) {
+        [state, ensureConnected](const QString &username, const QString &password,
+                                 const QString &nickname, const QString &email,
+                                 const QString &verifyCode) {
             ensureConnected();
-            state->registerUser(username, password, nickname);
+            state->registerUser(username, password, nickname, email, verifyCode);
+        });
+
+    // send verify code (register / reset)
+    QObject::connect(loginWindow, &LoginWindow::verifyCodeRequested, state,
+        [state, ensureConnected](const QString &target, const QString &scene) {
+            ensureConnected();
+            state->sendVerifyCode("email", target, scene);
+        });
+
+    // password reset
+    QObject::connect(loginWindow, &LoginWindow::passwordResetRequested, state,
+        [state, ensureConnected](const QString &email, const QString &verifyCode,
+                                 const QString &newPassword) {
+            ensureConnected();
+            state->resetPassword("email", email, verifyCode, newPassword);
         });
 
     // register result forwarding
     QObject::connect(state, &ClientState::registerResult, loginWindow,
         &LoginWindow::onRegisterResult);
+
+    // verify code result forwarding
+    QObject::connect(state, &ClientState::verifyCodeResult, loginWindow,
+        &LoginWindow::onVerifyCodeResult);
+
+    // password reset result forwarding
+    QObject::connect(state, &ClientState::passwordResetResult, loginWindow,
+        &LoginWindow::onPasswordResetResult);
 
     // logout
     QObject::connect(state, &ClientState::logoutDone, mainWindow, [mainWindow, loginWindow]() {

@@ -38,7 +38,21 @@ public:
             case ChatMessage::kRegisterReq:
                 msg.payload = proto_msg.register_req().username() + "\n"
                             + proto_msg.register_req().password() + "\n"
-                            + proto_msg.register_req().nickname();
+                            + proto_msg.register_req().nickname() + "\n"
+                            + proto_msg.register_req().email() + "\n"
+                            + proto_msg.register_req().phone() + "\n"
+                            + proto_msg.register_req().verify_code();
+                break;
+            case ChatMessage::kVerifyCodeReq:
+                msg.payload = proto_msg.verify_code_req().channel() + "\n"
+                            + proto_msg.verify_code_req().target() + "\n"
+                            + proto_msg.verify_code_req().scene();
+                break;
+            case ChatMessage::kPasswordResetReq:
+                msg.payload = proto_msg.password_reset_req().channel() + "\n"
+                            + proto_msg.password_reset_req().target() + "\n"
+                            + proto_msg.password_reset_req().new_password() + "\n"
+                            + proto_msg.password_reset_req().verify_code();
                 break;
             case ChatMessage::kLogoutReq:
                 msg.payload = "";
@@ -50,7 +64,8 @@ public:
                 msg.payload = proto_msg.update_profile_req().nickname();
                 break;
             case ChatMessage::kAddFriendReq:
-                msg.payload = std::to_string(proto_msg.add_friend_req().target_user_id());
+                msg.payload = std::to_string(proto_msg.add_friend_req().target_user_id())
+                            + "\n" + proto_msg.add_friend_req().target_email();
                 break;
             case ChatMessage::kDeleteFriendReq:
                 msg.payload = std::to_string(proto_msg.delete_friend_req().target_user_id());
@@ -219,6 +234,26 @@ public:
                     body->set_username(result.username);
                     body->set_token(result.token);
                 } else {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::VERIFY_CODE_REQ: {
+                auto* body = proto_msg.mutable_verify_code_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_expire_seconds(result.expire_seconds);
+                    body->set_resend_seconds(result.resend_seconds);
+                    if (!result.debug_code.empty()) body->set_debug_code(result.debug_code);
+                } else {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::PASSWORD_RESET_REQ: {
+                auto* body = proto_msg.mutable_password_reset_rsp();
+                body->set_success(result.success);
+                if (!result.success) {
                     body->set_error_message(result.error_message);
                 }
                 break;

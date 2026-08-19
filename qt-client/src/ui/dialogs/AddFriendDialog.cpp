@@ -17,7 +17,7 @@ AddFriendDialog::AddFriendDialog(QWidget *parent)
     form->addRow("用户ID:", id_edit_);
 
     email_edit_ = new QLineEdit();
-    email_edit_->setPlaceholderText("或输入邮箱搜索（需服务端支持）");
+    email_edit_->setPlaceholderText("输入注册邮箱（与用户ID二选一）");
     form->addRow("邮箱:", email_edit_);
     layout->addLayout(form);
 

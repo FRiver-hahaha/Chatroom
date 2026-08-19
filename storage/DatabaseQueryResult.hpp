@@ -81,7 +81,7 @@ struct QueryResult {
         uint64_t file_id;
         std::string file_name;
         uint64_t file_size;
-        std::string file_path;
+        std::string file_path; 
         uint64_t sender_id;
         std::string sender_name;
         uint64_t timestamp = 0;
@@ -91,6 +91,9 @@ struct QueryResult {
 
     std::string token;
     std::string verify_code;
+    int expire_seconds = 0;    // 验证码有效期
+    int resend_seconds = 0;    // 重发冷却
+    std::string debug_code;
     std::string final_path;
 };
 

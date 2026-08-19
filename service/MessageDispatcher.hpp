@@ -52,6 +52,8 @@ private:
         switch (msg.type) {
             case MessageType::LOGIN_REQ:          handle_login(conn, msg, result); break;
             case MessageType::REGISTER_REQ:       send_rsp(conn, msg, result); break;
+            case MessageType::VERIFY_CODE_REQ:    send_rsp(conn, msg, result); break;
+            case MessageType::PASSWORD_RESET_REQ: send_rsp(conn, msg, result); break;
             case MessageType::LOGOUT_REQ:         handle_logout(conn, msg, result); break;
             case MessageType::DELETE_ACCOUNT_REQ: send_rsp_and_logout(conn, msg, result); break;
             case MessageType::UPDATE_PROFILE_REQ: send_rsp(conn, msg, result); break;

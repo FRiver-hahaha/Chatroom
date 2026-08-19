@@ -41,8 +41,22 @@ static std::string xfer_chunk_path(uint64_t transfer_id, uint32_t chunk_seq) {//
            + "/chunk_" + std::to_string(chunk_seq);
 }
 
-MySQLConnectionPool::MySQLConnectionPool(size_t pool_size) : pool_size_(pool_size) {}
-MySQLConnectionPool::~MySQLConnectionPool() { close_all(); }
+// 验证码 Redis key 构造（scene: register/reset，channel: email/phone）
+static std::string vcode_key(const std::string& scene, const std::string& channel,
+                             const std::string& target) {
+    return "chatroom:vcode:" + scene + ":" + channel + ":" + target;
+}
+static std::string vcode_rate_key(const std::string& scene, const std::string& channel,
+                                  const std::string& target) {
+    return "chatroom:vcode:rate:" + scene + ":" + channel + ":" + target;
+}
+static std::string vcode_try_key(const std::string& scene, const std::string& channel,
+                                 const std::string& target) {
+    return "chatroom:vcode:try:" + scene + ":" + channel + ":" + target;
+}
+
+MySQLConnectionPool::MySQLConnectionPool(size_t pool_size) : pool_size_(pool_size) {} // 构造连接池，仅记录连接数量
+MySQLConnectionPool::~MySQLConnectionPool() { close_all(); } // 析构时关闭所有连接
 
 bool MySQLConnectionPool::init(const std::string& host, const std::string& user,
                                 const std::string& password, const std::string& database,
@@ -96,8 +110,8 @@ void MySQLConnectionPool::close_all() {// 关闭连接
     initialized_ = false;
 }
 
-StorageManager::StorageManager() = default;
-StorageManager::~StorageManager() { disconnect(); }
+StorageManager::StorageManager() = default; // 默认构造
+StorageManager::~StorageManager() { disconnect(); } // 析构时断开连接
 
 bool StorageManager::connect(const std::string& mysql_host, const std::string& mysql_user,
                               const std::string& mysql_password, const std::string& mysql_database,
@@ -164,20 +178,20 @@ std::string StorageManager::escape_string(MYSQL* conn, const std::string& str) {
     return std::string(buf.data());
 }
 
-std::string StorageManager::generate_salt() {
+std::string StorageManager::generate_salt() {// 产生盐值
     unsigned char buf[32];
     RAND_bytes(buf, sizeof(buf));
     return bin_to_hex(buf, sizeof(buf));
 }
 
-std::string StorageManager::hash_password(const std::string& password, const std::string& salt) {
+std::string StorageManager::hash_password(const std::string& password, const std::string& salt) {// 对密码进行哈希处理
     unsigned char hash[SHA256_DIGEST_LENGTH];
     std::string combined = salt + password;
     SHA256(reinterpret_cast<const unsigned char*>(combined.c_str()), combined.size(), hash);
     return bin_to_hex(hash, SHA256_DIGEST_LENGTH);
 }
 
-std::string StorageManager::generate_token() {
+std::string StorageManager::generate_token() {// 产生token
     unsigned char buf[32];
     RAND_bytes(buf, sizeof(buf));
     std::ostringstream oss;
@@ -186,12 +200,14 @@ std::string StorageManager::generate_token() {
     return oss.str();
 }
 
-bool StorageManager::redis_reconnect() {
+bool StorageManager::redis_reconnect() {// redis重新连接
     if (redis_ctx_) redisFree(redis_ctx_);
     redis_ctx_ = redisConnect(redis_host_.c_str(), redis_port_);
     return redis_ctx_ && !redis_ctx_->err;
 }
 
+
+// 宏封装，提高代码复用能力
 #define REDIS_CMD(func, fmt, ...)                                               \
     do {                                                                         \
         std::lock_guard<std::mutex> lock(redis_mutex_);                          \
@@ -209,33 +225,63 @@ bool StorageManager::redis_reconnect() {
         freeReplyObject(_r);                                                     \
     } while (0)
 
-bool StorageManager::redis_set(const std::string& key, const std::string& value) {
+bool StorageManager::redis_set(const std::string& key, const std::string& value) {// 设置键值
     bool ok = false; REDIS_CMD(, "SET %s %s", key.c_str(), value.c_str()); return ok;
 }
-bool StorageManager::redis_set_ex(const std::string& key, const std::string& value, int sec) {
+bool StorageManager::redis_set_ex(const std::string& key, const std::string& value, int sec) {// 带有过期时间
     bool ok = false; REDIS_CMD(, "SETEX %s %d %s", key.c_str(), sec, value.c_str()); return ok;
 }
-bool StorageManager::redis_del(const std::string& key) {
+bool StorageManager::redis_set_nx_ex(const std::string& key, const std::string& value, int seconds) {// NX：用于频率限制
+    std::lock_guard<std::mutex> lock(redis_mutex_);
+    if (!redis_ctx_) return false;
+    auto* r = reinterpret_cast<redisReply*>(
+        redisCommand(redis_ctx_, "SET %s %s EX %d NX", key.c_str(), value.c_str(), seconds));
+    if (!r) {
+        if (redis_reconnect())
+            r = reinterpret_cast<redisReply*>(
+                redisCommand(redis_ctx_, "SET %s %s EX %d NX", key.c_str(), value.c_str(), seconds));
+        if (!r) return false;
+    }
+    bool ok = (r->type == REDIS_REPLY_STATUS);  // NX 未命中时返回 NIL
+    if (r->type == REDIS_REPLY_ERROR) LOG(ERROR) << "[Redis] " << r->str;
+    freeReplyObject(r);
+    return ok;
+}
+long long StorageManager::redis_incr(const std::string& key) {// 自增+1并返回新值
+    std::lock_guard<std::mutex> lock(redis_mutex_);
+    if (!redis_ctx_) return -1;
+    auto* r = reinterpret_cast<redisReply*>(redisCommand(redis_ctx_, "INCR %s", key.c_str()));
+    if (!r) {
+        if (redis_reconnect())
+            r = reinterpret_cast<redisReply*>(redisCommand(redis_ctx_, "INCR %s", key.c_str()));
+        if (!r) return -1;
+    }
+    long long v = (r->type == REDIS_REPLY_INTEGER) ? r->integer : -1;
+    if (r->type == REDIS_REPLY_ERROR) LOG(ERROR) << "[Redis] " << r->str;
+    freeReplyObject(r);
+    return v;
+}
+bool StorageManager::redis_del(const std::string& key) {// 删除键
     bool ok = false; REDIS_CMD(, "DEL %s", key.c_str()); return ok;
 }
-bool StorageManager::redis_hset(const std::string& key, const std::string& f, const std::string& v) {
+bool StorageManager::redis_hset(const std::string& key, const std::string& f, const std::string& v) {// 设置哈希表字段
     bool ok = false; REDIS_CMD(, "HSET %s %s %s", key.c_str(), f.c_str(), v.c_str()); return ok;
 }
-bool StorageManager::redis_sadd(const std::string& key, const std::string& m) {
+bool StorageManager::redis_sadd(const std::string& key, const std::string& m) {// 向集合添加成员
     bool ok = false; REDIS_CMD(, "SADD %s %s", key.c_str(), m.c_str()); return ok;
 }
-bool StorageManager::redis_srem(const std::string& key, const std::string& m) {
+bool StorageManager::redis_srem(const std::string& key, const std::string& m) {// 从集合移除成员
     bool ok = false; REDIS_CMD(, "SREM %s %s", key.c_str(), m.c_str()); return ok;
 }
-bool StorageManager::redis_lpush(const std::string& key, const std::string& v) {
+bool StorageManager::redis_lpush(const std::string& key, const std::string& v) {// 从列表头部插入元素
     bool ok = false; REDIS_CMD(, "LPUSH %s %s", key.c_str(), v.c_str()); return ok;
 }
-bool StorageManager::redis_expire(const std::string& key, int sec) {
+bool StorageManager::redis_expire(const std::string& key, int sec) {// 设置键过期时间
     bool ok = false; REDIS_CMD(, "EXPIRE %s %d", key.c_str(), sec); return ok;
 }
-bool StorageManager::redis_del_key(const std::string& key) { return redis_del(key); }
+bool StorageManager::redis_del_key(const std::string& key) { return redis_del(key); } // 删除键（兼容旧接口）
 
-std::string StorageManager::redis_get(const std::string& key) {
+std::string StorageManager::redis_get(const std::string& key) {// 获取对应键值
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!redis_ctx_) return "";
     auto* r = reinterpret_cast<redisReply*>(redisCommand(redis_ctx_, "GET %s", key.c_str()));
@@ -247,7 +293,7 @@ std::string StorageManager::redis_get(const std::string& key) {
     freeReplyObject(r);
     return res;
 }
-std::string StorageManager::redis_hget(const std::string& key, const std::string& field) {
+std::string StorageManager::redis_hget(const std::string& key, const std::string& field) {// 获取哈希表的值
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!redis_ctx_) return "";
     auto* r = reinterpret_cast<redisReply*>(redisCommand(redis_ctx_, "HGET %s %s", key.c_str(), field.c_str()));
@@ -257,7 +303,7 @@ std::string StorageManager::redis_hget(const std::string& key, const std::string
     }
     std::string res(r->str, r->len); freeReplyObject(r); return res;
 }
-std::vector<std::string> StorageManager::redis_smembers(const std::string& key) {
+std::vector<std::string> StorageManager::redis_smembers(const std::string& key) {// 获取集合全部成员
     std::vector<std::string> result;
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!redis_ctx_) return result;
@@ -269,14 +315,14 @@ std::vector<std::string> StorageManager::redis_smembers(const std::string& key) 
     return result;
 }
 
-bool StorageManager::redis_sismember(const std::string& key, const std::string& member) {
+bool StorageManager::redis_sismember(const std::string& key, const std::string& member) {// 判断成员是否在集合中
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!redis_ctx_) return false;
     auto* r = reinterpret_cast<redisReply*>(redisCommand(redis_ctx_, "SISMEMBER %s %s", key.c_str(), member.c_str()));
     if (!r || r->type != REDIS_REPLY_INTEGER) { if (r) freeReplyObject(r); return false; }
     bool ok = (r->integer == 1); freeReplyObject(r); return ok;
 }
-std::vector<std::string> StorageManager::redis_lrange(const std::string& key, int start, int stop) {
+std::vector<std::string> StorageManager::redis_lrange(const std::string& key, int start, int stop) {// 获取列表区间元素
     std::vector<std::string> result;
     std::lock_guard<std::mutex> lock(redis_mutex_);
     if (!redis_ctx_) return result;
@@ -288,7 +334,7 @@ std::vector<std::string> StorageManager::redis_lrange(const std::string& key, in
     return result;
 }
 
-bool StorageManager::user_exists(const std::string& username) {
+bool StorageManager::user_exists(const std::string& username) {// 判断用户名是否已存在
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string e = escape_string(conn, username);
@@ -306,7 +352,9 @@ bool StorageManager::user_exists(const std::string& username) {
 
 QueryResult StorageManager::create_user(const std::string& username,
                                           const std::string& password,
-                                          const std::string& nickname) {
+                                          const std::string& nickname,
+                                          const std::string& email,
+                                          const std::string& phone) {// 创建新用户（含邮箱/手机号）
     QueryResult result;
     if (user_exists(username)) {
         result.success = false; result.error_message = "用户名已存在"; return result;
@@ -317,10 +365,13 @@ QueryResult StorageManager::create_user(const std::string& username,
     if (!conn) { result.success = false; result.error_message = "数据库连接失败"; return result; }
     std::string eu = escape_string(conn, username);
     std::string en = escape_string(conn, nickname);
+    std::string email_sql = email.empty() ? "NULL" : ("'" + escape_string(conn, email) + "'");
+    std::string phone_sql = phone.empty() ? "NULL" : ("'" + escape_string(conn, phone) + "'");
 
     // 始终新建用户，不复用已注销账号的 ID，避免残留旧数据随 ID 复活
-    std::string q = "INSERT INTO users (username, password_hash, salt, nickname) VALUES ('"
-                   + eu + "', '" + hash + "', '" + salt + "', '" + en + "')";
+    std::string q = "INSERT INTO users (username, password_hash, salt, nickname, email, phone) VALUES ('"
+                   + eu + "', '" + hash + "', '" + salt + "', '" + en + "', "
+                   + email_sql + ", " + phone_sql + ")";
     if (mysql_query(conn, q.c_str()) != 0) {
         result.success = false;
         result.error_message = std::string("创建用户失败: ") + mysql_error(conn);
@@ -341,7 +392,7 @@ QueryResult StorageManager::create_user(const std::string& username,
     return result;
 }
 
-QueryResult StorageManager::get_user_by_username(const std::string& username) {
+QueryResult StorageManager::get_user_by_username(const std::string& username) {// 按用户名查询用户
     QueryResult result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) { result.success = false; result.error_message = "数据库连接失败"; return result; }
@@ -370,7 +421,7 @@ QueryResult StorageManager::get_user_by_username(const std::string& username) {
     return result;
 }
 
-QueryResult StorageManager::get_user_by_id(uint64_t user_id) {
+QueryResult StorageManager::get_user_by_id(uint64_t user_id) {// 按用户ID查询用户
     QueryResult result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) { result.success = false; result.error_message = "数据库连接失败"; return result; }
@@ -397,7 +448,95 @@ QueryResult StorageManager::get_user_by_id(uint64_t user_id) {
     return result;
 }
 
-bool StorageManager::verify_password(const std::string& username, const std::string& password) {
+QueryResult StorageManager::get_user_by_email(const std::string& email) {// 按邮箱查询用户
+    QueryResult result;
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) { result.success = false; result.error_message = "数据库连接失败"; return result; }
+    std::string e = escape_string(conn, email);
+    std::string q = "SELECT id, username, nickname, status FROM users WHERE email='" + e + "'";
+    if (mysql_query(conn, q.c_str()) != 0) {
+        result.success = false; result.error_message = "查询用户失败";
+        mysql_pool_->release(conn); return result;
+    }
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (!res || mysql_num_rows(res) == 0) {
+        if (res) mysql_free_result(res);
+        mysql_pool_->release(conn);
+        result.success = false; result.error_message = "用户不存在"; return result;
+    }
+    MYSQL_ROW row = mysql_fetch_row(res);
+    result.success = true;
+    result.user_id = std::stoull(row[0]);
+    result.username = row[1] ? row[1] : "";
+    result.nickname = row[2] ? row[2] : "";
+    result.user_status = row[3] ? std::stoi(row[3]) : 1;
+    result.is_online = is_online(result.user_id);
+    mysql_free_result(res);
+    mysql_pool_->release(conn);
+    return result;
+}
+
+QueryResult StorageManager::get_user_by_phone(const std::string& phone) {// 按手机号查询用户
+    QueryResult result;
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) { result.success = false; result.error_message = "数据库连接失败"; return result; }
+    std::string e = escape_string(conn, phone);
+    std::string q = "SELECT id, username, nickname, status FROM users WHERE phone='" + e + "'";
+    if (mysql_query(conn, q.c_str()) != 0) {
+        result.success = false; result.error_message = "查询用户失败";
+        mysql_pool_->release(conn); return result;
+    }
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (!res || mysql_num_rows(res) == 0) {
+        if (res) mysql_free_result(res);
+        mysql_pool_->release(conn);
+        result.success = false; result.error_message = "用户不存在"; return result;
+    }
+    MYSQL_ROW row = mysql_fetch_row(res);
+    result.success = true;
+    result.user_id = std::stoull(row[0]);
+    result.username = row[1] ? row[1] : "";
+    result.nickname = row[2] ? row[2] : "";
+    result.user_status = row[3] ? std::stoi(row[3]) : 1;
+    result.is_online = is_online(result.user_id);
+    mysql_free_result(res);
+    mysql_pool_->release(conn);
+    return result;
+}
+
+bool StorageManager::email_exists(const std::string& email) {// 判断邮箱是否已被绑定
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string e = escape_string(conn, email);
+    std::string q = "SELECT COUNT(*) FROM users WHERE email='" + e + "'";
+    bool exists = false;
+    if (mysql_query(conn, q.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn);
+        MYSQL_ROW row = mysql_fetch_row(res);
+        exists = (row && std::stoi(row[0]) > 0);
+        mysql_free_result(res);
+    }
+    mysql_pool_->release(conn);
+    return exists;
+}
+
+bool StorageManager::phone_exists(const std::string& phone) {// 判断手机号是否已被绑定
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string e = escape_string(conn, phone);
+    std::string q = "SELECT COUNT(*) FROM users WHERE phone='" + e + "'";
+    bool exists = false;
+    if (mysql_query(conn, q.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn);
+        MYSQL_ROW row = mysql_fetch_row(res);
+        exists = (row && std::stoi(row[0]) > 0);
+        mysql_free_result(res);
+    }
+    mysql_pool_->release(conn);
+    return exists;
+}
+
+bool StorageManager::verify_password(const std::string& username, const std::string& password) {// 校验用户名密码是否匹配
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string e = escape_string(conn, username);
@@ -416,7 +555,7 @@ bool StorageManager::verify_password(const std::string& username, const std::str
     return hash_password(password, salt) == stored_hash;
 }
 
-bool StorageManager::update_password(uint64_t user_id, const std::string& new_password) {
+bool StorageManager::update_password(uint64_t user_id, const std::string& new_password) {// 更新密码（重新加盐哈希）
     std::string salt = generate_salt();
     std::string hash = hash_password(new_password, salt);
     MYSQL* conn = mysql_pool_->acquire();
@@ -428,7 +567,7 @@ bool StorageManager::update_password(uint64_t user_id, const std::string& new_pa
     return ok;
 }
 
-bool StorageManager::update_nickname(uint64_t user_id, const std::string& nickname) {
+bool StorageManager::update_nickname(uint64_t user_id, const std::string& nickname) {// 更新昵称
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string en = escape_string(conn, nickname);
@@ -439,7 +578,7 @@ bool StorageManager::update_nickname(uint64_t user_id, const std::string& nickna
     return ok;
 }
 
-std::string StorageManager::create_session(uint64_t user_id, const std::string& username) {
+std::string StorageManager::create_session(uint64_t user_id, const std::string& username) {// 创建登录会话并返回token
     std::string token = generate_token();
     std::string sk = "chatroom:session:" + std::to_string(user_id);
     redis_hset(sk, "username", username);
@@ -450,11 +589,41 @@ std::string StorageManager::create_session(uint64_t user_id, const std::string& 
     return token;
 }
 
-bool StorageManager::verify_token(const std::string& token) {
+bool StorageManager::verify_token(const std::string& token) {// 校验token是否有效
     return !redis_get("chatroom:token:" + token).empty();
 }
 
-bool StorageManager::delete_user(uint64_t user_id) {
+bool StorageManager::save_verify_code(const std::string& scene, const std::string& channel,
+                                      const std::string& target, const std::string& code, int ttl_sec) {
+    return redis_set_ex(vcode_key(scene, channel, target), code, ttl_sec);// 保存验证码
+}
+
+std::string StorageManager::load_verify_code(const std::string& scene, const std::string& channel,
+                                             const std::string& target) {// 获取验证码
+    return redis_get(vcode_key(scene, channel, target));
+}
+
+void StorageManager::del_verify_code(const std::string& scene, const std::string& channel,
+                                     const std::string& target) {// 删除验证码
+    redis_del(vcode_key(scene, channel, target));
+    redis_del(vcode_try_key(scene, channel, target));
+}
+
+bool StorageManager::try_verify_rate_limit(const std::string& scene, const std::string& channel,
+                                           const std::string& target, int cooldown_sec) {// 验证码发送频率限制
+    // 返回 true 表示允许发送（key 不存在、首次）；false 表示冷却中
+    return redis_set_nx_ex(vcode_rate_key(scene, channel, target), "1", cooldown_sec);
+}
+
+int64_t StorageManager::incr_verify_attempt(const std::string& scene, const std::string& channel,
+                                            const std::string& target, int ttl_sec) {// 累加验证码错误尝试次数
+    std::string key = vcode_try_key(scene, channel, target);
+    int64_t v = redis_incr(key);
+    if (v == 1) redis_expire(key, ttl_sec);  // 首次自增时设置 TTL
+    return v;
+}
+
+bool StorageManager::delete_user(uint64_t user_id) {// 注销用户
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string uid = std::to_string(user_id);
@@ -513,7 +682,7 @@ bool StorageManager::delete_user(uint64_t user_id) {
     return ok;
 }
 
-bool StorageManager::clear_session(uint64_t user_id) {
+bool StorageManager::clear_session(uint64_t user_id) {// 清除用户会话
     std::string sk = "chatroom:session:" + std::to_string(user_id);
     std::string token = redis_hget(sk, "token");
     if (!token.empty()) redis_del("chatroom:token:" + token);
@@ -521,7 +690,7 @@ bool StorageManager::clear_session(uint64_t user_id) {
     return true;
 }
 
-bool StorageManager::add_friend(uint64_t user_id, uint64_t friend_id) {
+bool StorageManager::add_friend(uint64_t user_id, uint64_t friend_id) {// 添加好友
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q1 = "INSERT IGNORE INTO friendships (user_id, friend_id) VALUES ("
@@ -530,12 +699,12 @@ bool StorageManager::add_friend(uint64_t user_id, uint64_t friend_id) {
                     + std::to_string(friend_id) + ", " + std::to_string(user_id) + ")";
     bool ok = (mysql_query(conn, q1.c_str()) == 0 && mysql_query(conn, q2.c_str()) == 0);
     mysql_pool_->release(conn);
-    redis_del("chatroom:user:" + std::to_string(user_id) + ":friends");
+    redis_del("chatroom:user:" + std::to_string(user_id) + ":friends");// 保证缓存的一致性，因此在这里进行删除缓存
     redis_del("chatroom:user:" + std::to_string(friend_id) + ":friends");
     return ok;
 }
 
-bool StorageManager::remove_friend(uint64_t user_id, uint64_t friend_id) {
+bool StorageManager::remove_friend(uint64_t user_id, uint64_t friend_id) {// 删除好友
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q1 = "DELETE FROM friendships WHERE user_id=" + std::to_string(user_id)
@@ -544,7 +713,7 @@ bool StorageManager::remove_friend(uint64_t user_id, uint64_t friend_id) {
                     + " AND friend_id=" + std::to_string(user_id);
     bool ok = (mysql_query(conn, q1.c_str()) == 0 && mysql_query(conn, q2.c_str()) == 0);
 
-    // 删除好友时同时清除双方私聊记录，避免重新加回后仍能看到旧历史
+    // 删除好友时同时清除双方私聊记录
     std::string uid = std::to_string(user_id), fid = std::to_string(friend_id);
     std::string del_msg = "DELETE FROM messages WHERE group_id IS NULL "
                           "AND ((sender_id=" + uid + " AND target_id=" + fid + ") "
@@ -557,7 +726,7 @@ bool StorageManager::remove_friend(uint64_t user_id, uint64_t friend_id) {
     return ok;
 }
 
-bool StorageManager::is_friend(uint64_t user_id, uint64_t friend_id) {
+bool StorageManager::is_friend(uint64_t user_id, uint64_t friend_id) {// 判断是否为好友
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "SELECT COUNT(*) FROM friendships WHERE user_id="
@@ -573,7 +742,7 @@ bool StorageManager::is_friend(uint64_t user_id, uint64_t friend_id) {
     return result;
 }
 
-bool StorageManager::block_friend(uint64_t user_id, uint64_t friend_id) {
+bool StorageManager::block_friend(uint64_t user_id, uint64_t friend_id) {// 拉黑好友
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "UPDATE friendships SET is_blocked=TRUE WHERE user_id="
@@ -583,7 +752,7 @@ bool StorageManager::block_friend(uint64_t user_id, uint64_t friend_id) {
     return ok;
 }
 
-bool StorageManager::unblock_friend(uint64_t user_id, uint64_t friend_id) {
+bool StorageManager::unblock_friend(uint64_t user_id, uint64_t friend_id) {// 取消拉黑好友
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "UPDATE friendships SET is_blocked=FALSE WHERE user_id="
@@ -593,7 +762,7 @@ bool StorageManager::unblock_friend(uint64_t user_id, uint64_t friend_id) {
     return ok;
 }
 
-bool StorageManager::is_blocked_by(uint64_t user_id, uint64_t friend_id) {
+bool StorageManager::is_blocked_by(uint64_t user_id, uint64_t friend_id) {// 判断是否被对方拉黑
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "SELECT COUNT(*) FROM friendships WHERE user_id="
@@ -610,7 +779,7 @@ bool StorageManager::is_blocked_by(uint64_t user_id, uint64_t friend_id) {
     return result;
 }
 
-std::vector<QueryResult::FriendInfo> StorageManager::get_blocked_users(uint64_t user_id) {
+std::vector<QueryResult::FriendInfo> StorageManager::get_blocked_users(uint64_t user_id) {// 获取黑名单列表
     std::vector<QueryResult::FriendInfo> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
@@ -636,7 +805,7 @@ std::vector<QueryResult::FriendInfo> StorageManager::get_blocked_users(uint64_t 
     return result;
 }
 
-std::vector<QueryResult::FriendInfo> StorageManager::get_friends(uint64_t user_id) {
+std::vector<QueryResult::FriendInfo> StorageManager::get_friends(uint64_t user_id) {// 获取好友列表
     std::vector<QueryResult::FriendInfo> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
@@ -663,7 +832,7 @@ std::vector<QueryResult::FriendInfo> StorageManager::get_friends(uint64_t user_i
     return result;
 }
 
-uint64_t StorageManager::get_streak_days(uint64_t user_id, uint64_t peer_id) {
+uint64_t StorageManager::get_streak_days(uint64_t user_id, uint64_t peer_id) {// 计算两人连续聊天天数
     if (user_id == 0 || peer_id == 0) return 0;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return 0;
@@ -712,13 +881,12 @@ uint64_t StorageManager::get_streak_days(uint64_t user_id, uint64_t peer_id) {
 
 uint64_t StorageManager::create_group(const std::string& group_name,
                                         const std::string& description,
-                                        uint64_t owner_id, bool is_public) {
+                                        uint64_t owner_id, bool is_public) {// 创建群组
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return 0;
     std::string eg = escape_string(conn, group_name);
     std::string ed = escape_string(conn, description);
 
-    // 优先复用已解散群组 (member_count=0) 的 ID
     uint64_t group_id = 0;
     std::string find_q = "SELECT id FROM chat_groups WHERE member_count=0 LIMIT 1";
     if (mysql_query(conn, find_q.c_str()) == 0) {
@@ -736,7 +904,6 @@ uint64_t StorageManager::create_group(const std::string& group_name,
         mysql_free_result(res);
     }
 
-    // 没有可复用的，走 INSERT
     if (group_id == 0) {
         std::string q = "INSERT INTO chat_groups (group_name, description, owner_id, is_public) VALUES ('"
                        + eg + "', '" + ed + "', " + std::to_string(owner_id)
@@ -745,7 +912,6 @@ uint64_t StorageManager::create_group(const std::string& group_name,
         group_id = mysql_insert_id(conn);
     }
 
-    // 清理旧成员记录后加入群主
     std::string del_old = "DELETE FROM group_members WHERE group_id=" + std::to_string(group_id);
     mysql_query(conn, del_old.c_str());
     std::string mq = "INSERT INTO group_members (group_id, user_id, role) VALUES ("
@@ -756,7 +922,7 @@ uint64_t StorageManager::create_group(const std::string& group_name,
     return group_id;
 }
 
-bool StorageManager::dismiss_group(uint64_t group_id, uint64_t requester_id) {
+bool StorageManager::dismiss_group(uint64_t group_id, uint64_t requester_id) {// 解散群组（仅群主）
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ck = "SELECT owner_id FROM chat_groups WHERE id=" + std::to_string(group_id);
@@ -768,7 +934,6 @@ bool StorageManager::dismiss_group(uint64_t group_id, uint64_t requester_id) {
         }
         mysql_free_result(res);
     }
-    // 软删除：清理成员后标记 member_count=0 供复用
     std::string del_members = "DELETE FROM group_members WHERE group_id=" + std::to_string(group_id);
     mysql_query(conn, del_members.c_str());
     std::string del_msgs = "DELETE FROM messages WHERE group_id=" + std::to_string(group_id);
@@ -780,7 +945,7 @@ bool StorageManager::dismiss_group(uint64_t group_id, uint64_t requester_id) {
     return ok;
 }
 
-bool StorageManager::join_group(uint64_t group_id, uint64_t user_id) {
+bool StorageManager::join_group(uint64_t group_id, uint64_t user_id) {// 加入群组
     if (is_group_member(group_id, user_id)) return false;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
@@ -798,7 +963,7 @@ bool StorageManager::join_group(uint64_t group_id, uint64_t user_id) {
     return ok;
 }
 
-bool StorageManager::quit_group(uint64_t group_id, uint64_t user_id) {
+bool StorageManager::quit_group(uint64_t group_id, uint64_t user_id) {// 退出群组（群主退出自动转让）
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
 
@@ -837,7 +1002,6 @@ bool StorageManager::quit_group(uint64_t group_id, uint64_t user_id) {
         }
     }
 
-    // 删除退出用户
     std::string q = "DELETE FROM group_members WHERE group_id=" + std::to_string(group_id)
                    + " AND user_id=" + std::to_string(user_id);
     bool ok = (mysql_query(conn, q.c_str()) == 0);
@@ -845,7 +1009,6 @@ bool StorageManager::quit_group(uint64_t group_id, uint64_t user_id) {
         std::string up = "UPDATE chat_groups SET member_count = GREATEST(member_count - 1, 0) WHERE id="
                         + std::to_string(group_id);
         mysql_query(conn, up.c_str());
-        // 成员数为0时不再删除群组，保留行供 create_group 复用
     }
     mysql_pool_->release(conn);
     redis_del("chatroom:group:" + std::to_string(group_id) + ":members");
@@ -853,7 +1016,7 @@ bool StorageManager::quit_group(uint64_t group_id, uint64_t user_id) {
     return ok;
 }
 
-bool StorageManager::add_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id) {
+bool StorageManager::add_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id) {// 设置管理员（仅群主）
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ck = "SELECT owner_id FROM chat_groups WHERE id=" + std::to_string(group_id);
@@ -873,7 +1036,7 @@ bool StorageManager::add_admin(uint64_t group_id, uint64_t owner_id, uint64_t us
     return ok;
 }
 
-bool StorageManager::remove_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id) {
+bool StorageManager::remove_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id) {// 取消管理员（仅群主）
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ck = "SELECT owner_id FROM chat_groups WHERE id=" + std::to_string(group_id);
@@ -893,7 +1056,7 @@ bool StorageManager::remove_admin(uint64_t group_id, uint64_t owner_id, uint64_t
     return ok;
 }
 
-bool StorageManager::approve_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {
+bool StorageManager::approve_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {// 审批通过入群申请
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ck = "SELECT role FROM group_members WHERE group_id=" + std::to_string(group_id)
@@ -918,7 +1081,7 @@ bool StorageManager::approve_join(uint64_t group_id, uint64_t admin_id, uint64_t
     return join_group(group_id, user_id);
 }
 
-bool StorageManager::reject_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {
+bool StorageManager::reject_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {// 拒绝入群申请
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ck = "SELECT role FROM group_members WHERE group_id=" + std::to_string(group_id)
@@ -938,7 +1101,7 @@ bool StorageManager::reject_join(uint64_t group_id, uint64_t admin_id, uint64_t 
     return redis_srem(key, std::to_string(user_id));
 }
 
-bool StorageManager::transfer_group_ownership(uint64_t group_id, uint64_t new_owner_id) {
+bool StorageManager::transfer_group_ownership(uint64_t group_id, uint64_t new_owner_id) {// 转让群主身份
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string up1 = "UPDATE chat_groups SET owner_id=" + std::to_string(new_owner_id)
@@ -951,7 +1114,7 @@ bool StorageManager::transfer_group_ownership(uint64_t group_id, uint64_t new_ow
     return ok;
 }
 
-std::vector<uint64_t> StorageManager::get_pending_join_requests(uint64_t group_id) {
+std::vector<uint64_t> StorageManager::get_pending_join_requests(uint64_t group_id) {// 获取待审批入群申请
     std::vector<uint64_t> result;
     std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
     auto members = redis_smembers(key);
@@ -963,7 +1126,7 @@ std::vector<uint64_t> StorageManager::get_pending_join_requests(uint64_t group_i
     return result;
 }
 
-bool StorageManager::remove_member(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {
+bool StorageManager::remove_member(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {// 移除群成员
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ck = "SELECT role FROM group_members WHERE group_id=" + std::to_string(group_id)
@@ -979,7 +1142,7 @@ bool StorageManager::remove_member(uint64_t group_id, uint64_t admin_id, uint64_
     return can ? quit_group(group_id, user_id) : false;
 }
 
-bool StorageManager::is_group_member(uint64_t group_id, uint64_t user_id) {
+bool StorageManager::is_group_member(uint64_t group_id, uint64_t user_id) {// 判断是否为群成员
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "SELECT COUNT(*) FROM group_members WHERE group_id=" + std::to_string(group_id)
@@ -995,9 +1158,9 @@ bool StorageManager::is_group_member(uint64_t group_id, uint64_t user_id) {
     return result;
 }
 
-bool StorageManager::is_group_public(uint64_t group_id) {
+bool StorageManager::is_group_public(uint64_t group_id) {// 判断群组是否公开
     MYSQL* conn = mysql_pool_->acquire();
-    if (!conn) return true; // default to public on error
+    if (!conn) return true;
     std::string q = "SELECT is_public FROM chat_groups WHERE id=" + std::to_string(group_id);
     bool result = true;
     if (mysql_query(conn, q.c_str()) == 0) {
@@ -1010,18 +1173,18 @@ bool StorageManager::is_group_public(uint64_t group_id) {
     return result;
 }
 
-bool StorageManager::request_join_group(uint64_t group_id, uint64_t user_id) {
+bool StorageManager::request_join_group(uint64_t group_id, uint64_t user_id) {// 发起入群申请
     if (is_group_member(group_id, user_id)) return false;
     std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
     return redis_sadd(key, std::to_string(user_id));
 }
 
-bool StorageManager::is_join_pending(uint64_t group_id, uint64_t user_id) {
+bool StorageManager::is_join_pending(uint64_t group_id, uint64_t user_id) {// 判断是否在待审批列表
     std::string key = "chatroom:group:" + std::to_string(group_id) + ":join_requests";
     return redis_sismember(key, std::to_string(user_id));
 }
 
-QueryResult::GroupInfo StorageManager::get_group_info(uint64_t group_id) {
+QueryResult::GroupInfo StorageManager::get_group_info(uint64_t group_id) {// 获取群组信息
     QueryResult::GroupInfo info{};
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return info;
@@ -1044,7 +1207,7 @@ QueryResult::GroupInfo StorageManager::get_group_info(uint64_t group_id) {
     return info;
 }
 
-std::vector<QueryResult::GroupInfo> StorageManager::get_user_groups(uint64_t user_id) {
+std::vector<QueryResult::GroupInfo> StorageManager::get_user_groups(uint64_t user_id) {// 获取用户加入的群组列表
     std::vector<QueryResult::GroupInfo> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
@@ -1071,7 +1234,7 @@ std::vector<QueryResult::GroupInfo> StorageManager::get_user_groups(uint64_t use
     return result;
 }
 
-std::vector<QueryResult::GroupMember> StorageManager::get_group_members(uint64_t group_id) {
+std::vector<QueryResult::GroupMember> StorageManager::get_group_members(uint64_t group_id) {// 获取群成员列表（含待审批）
     std::vector<QueryResult::GroupMember> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
@@ -1112,7 +1275,7 @@ std::vector<QueryResult::GroupMember> StorageManager::get_group_members(uint64_t
 }
 
 bool StorageManager::save_message(uint64_t sender_id, uint64_t target_id,
-                                    const std::string& content, int message_type) {
+                                    const std::string& content, int message_type) {// 保存私聊消息
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ec = escape_string(conn, content);
@@ -1125,7 +1288,7 @@ bool StorageManager::save_message(uint64_t sender_id, uint64_t target_id,
 }
 
 bool StorageManager::save_group_message(uint64_t group_id, uint64_t sender_id,
-                                          const std::string& content) {
+                                          const std::string& content) {// 保存群聊消息
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string ec = escape_string(conn, content);
@@ -1139,7 +1302,7 @@ bool StorageManager::save_group_message(uint64_t group_id, uint64_t sender_id,
 
 bool StorageManager::save_offline_message(uint64_t user_id, uint64_t sender_id,
                                             const std::string& sender_name,
-                                            const std::string& content) {
+                                            const std::string& content) {// 保存离线消息
     std::string key = "chatroom:offline_msg:" + std::to_string(user_id);
     std::string msg = std::to_string(sender_id) + "|" + sender_name + "|"
                      + content + "|" + now_str();
@@ -1149,7 +1312,7 @@ bool StorageManager::save_offline_message(uint64_t user_id, uint64_t sender_id,
 }
 
 std::vector<QueryResult::MessageHistory> StorageManager::get_history(
-    uint64_t user_id, uint64_t peer_id, int limit) {
+    uint64_t user_id, uint64_t peer_id, int limit) {// 获取私聊历史记录
     std::vector<QueryResult::MessageHistory> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
@@ -1177,7 +1340,7 @@ std::vector<QueryResult::MessageHistory> StorageManager::get_history(
     return result;
 }
 
-std::vector<QueryResult::MessageHistory> StorageManager::get_group_history(uint64_t group_id, int limit) {
+std::vector<QueryResult::MessageHistory> StorageManager::get_group_history(uint64_t group_id, int limit) {// 获取群聊历史记录
     std::vector<QueryResult::MessageHistory> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
@@ -1203,7 +1366,7 @@ std::vector<QueryResult::MessageHistory> StorageManager::get_group_history(uint6
     return result;
 }
 
-std::vector<QueryResult::MessageHistory> StorageManager::get_offline_messages(uint64_t user_id) {
+std::vector<QueryResult::MessageHistory> StorageManager::get_offline_messages(uint64_t user_id) {// 获取并清空离线消息
     std::vector<QueryResult::MessageHistory> result;
     auto msgs = redis_lrange("chatroom:offline_msg:" + std::to_string(user_id), 0, -1);
     for (auto& msg : msgs) {
@@ -1221,7 +1384,7 @@ std::vector<QueryResult::MessageHistory> StorageManager::get_offline_messages(ui
     return result;
 }
 
-bool StorageManager::mark_read(uint64_t message_id) {
+bool StorageManager::mark_read(uint64_t message_id) {// 标记消息已读
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "UPDATE messages SET is_read=TRUE WHERE id=" + std::to_string(message_id);
@@ -1232,7 +1395,7 @@ bool StorageManager::mark_read(uint64_t message_id) {
 
 uint64_t StorageManager::create_transfer(uint64_t sender_id, uint64_t receiver_id,
                                          const std::string& file_name, uint64_t file_size,
-                                         uint32_t total_chunks, const std::string& file_hash) {
+                                         uint32_t total_chunks, const std::string& file_hash) {// 创建文件传输记录
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return 0;
     std::string ef = escape_string(conn, file_name);
@@ -1259,7 +1422,7 @@ uint64_t StorageManager::create_transfer(uint64_t sender_id, uint64_t receiver_i
     return tid;
 }
 
-StorageManager::TransferInfo StorageManager::get_transfer_info(uint64_t transfer_id) {
+StorageManager::TransferInfo StorageManager::get_transfer_info(uint64_t transfer_id) {// 获取文件传输信息
     TransferInfo info{};
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return info;
@@ -1286,21 +1449,21 @@ StorageManager::TransferInfo StorageManager::get_transfer_info(uint64_t transfer
     return info;
 }
 
-bool StorageManager::record_sender_chunk(uint64_t transfer_id, uint32_t chunk_seq) {
+bool StorageManager::record_sender_chunk(uint64_t transfer_id, uint32_t chunk_seq) {// 记录发送方已上传分片
     std::string key = xfer_sender_key(transfer_id);
     bool ok = redis_sadd(key, std::to_string(chunk_seq));
     if (ok) redis_expire(key, 86400);  // 24h
     return ok;
 }
 
-bool StorageManager::record_receiver_chunk(uint64_t transfer_id, uint32_t chunk_seq) {
+bool StorageManager::record_receiver_chunk(uint64_t transfer_id, uint32_t chunk_seq) {// 记录接收方已下载分片
     std::string key = xfer_receiver_key(transfer_id);
     bool ok = redis_sadd(key, std::to_string(chunk_seq));
     if (ok) redis_expire(key, 86400);
     return ok;
 }
 
-std::vector<uint32_t> StorageManager::get_sender_chunks(uint64_t transfer_id) {
+std::vector<uint32_t> StorageManager::get_sender_chunks(uint64_t transfer_id) {// 获取发送方已上传分片序号
     std::vector<uint32_t> result;
     auto members = redis_smembers(xfer_sender_key(transfer_id));
     for (const auto& m : members) {
@@ -1310,7 +1473,7 @@ std::vector<uint32_t> StorageManager::get_sender_chunks(uint64_t transfer_id) {
     return result;
 }
 
-std::vector<uint32_t> StorageManager::get_receiver_chunks(uint64_t transfer_id) {
+std::vector<uint32_t> StorageManager::get_receiver_chunks(uint64_t transfer_id) {// 获取接收方已下载分片序号
     std::vector<uint32_t> result;
     auto members = redis_smembers(xfer_receiver_key(transfer_id));
     for (const auto& m : members) {
@@ -1321,7 +1484,7 @@ std::vector<uint32_t> StorageManager::get_receiver_chunks(uint64_t transfer_id) 
 }
 
 bool StorageManager::save_transfer_chunk_data(uint64_t transfer_id, uint32_t chunk_seq,
-                                              const std::string& data, const std::string& chunk_hash) {
+                                              const std::string& data, const std::string& chunk_hash) {// 保存分片数据到文件
     std::string path = xfer_chunk_path(transfer_id, chunk_seq);
     FILE* fp = fopen(path.c_str(), "wb");
     if (!fp) return false;
@@ -1336,7 +1499,7 @@ bool StorageManager::save_transfer_chunk_data(uint64_t transfer_id, uint32_t chu
     return true;
 }
 
-std::string StorageManager::get_transfer_chunk_data(uint64_t transfer_id, uint32_t chunk_seq) {
+std::string StorageManager::get_transfer_chunk_data(uint64_t transfer_id, uint32_t chunk_seq) {// 读取分片文件数据
     std::string path = xfer_chunk_path(transfer_id, chunk_seq);
     FILE* fp = fopen(path.c_str(), "rb");
     if (!fp) return "";
@@ -1349,13 +1512,13 @@ std::string StorageManager::get_transfer_chunk_data(uint64_t transfer_id, uint32
     return data;
 }
 
-std::string StorageManager::get_transfer_chunk_hash(uint64_t transfer_id, uint32_t chunk_seq) {
+std::string StorageManager::get_transfer_chunk_hash(uint64_t transfer_id, uint32_t chunk_seq) {// 获取分片哈希
     std::string hkey = "chatroom:transfer:" + std::to_string(transfer_id)
                      + ":chunk_hash:" + std::to_string(chunk_seq);
     return redis_get(hkey);
 }
 
-std::vector<StorageManager::TransferInfo> StorageManager::get_pending_transfers(uint64_t user_id) {
+std::vector<StorageManager::TransferInfo> StorageManager::get_pending_transfers(uint64_t user_id) {// 获取用户待接收的传输
     std::vector<TransferInfo> result;
     auto members = redis_smembers(xfer_pending_key(user_id));
     for (const auto& m : members) {
@@ -1368,15 +1531,15 @@ std::vector<StorageManager::TransferInfo> StorageManager::get_pending_transfers(
     return result;
 }
 
-bool StorageManager::add_pending_transfer(uint64_t user_id, uint64_t transfer_id) {
+bool StorageManager::add_pending_transfer(uint64_t user_id, uint64_t transfer_id) {// 添加待接收传输
     return redis_sadd(xfer_pending_key(user_id), std::to_string(transfer_id));
 }
 
-bool StorageManager::clear_pending_transfers(uint64_t user_id) {
+bool StorageManager::clear_pending_transfers(uint64_t user_id) {// 清空待接收传输
     return redis_del(xfer_pending_key(user_id));
 }
 
-bool StorageManager::complete_transfer(uint64_t transfer_id) {
+bool StorageManager::complete_transfer(uint64_t transfer_id) {// 标记传输完成
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "UPDATE file_transfers SET status='completed' WHERE transfer_id="
@@ -1386,7 +1549,7 @@ bool StorageManager::complete_transfer(uint64_t transfer_id) {
     return ok;
 }
 
-bool StorageManager::reject_transfer(uint64_t transfer_id) {
+bool StorageManager::reject_transfer(uint64_t transfer_id) {// 标记传输拒绝
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
     std::string q = "UPDATE file_transfers SET status='rejected' WHERE transfer_id="
@@ -1400,7 +1563,7 @@ std::string StorageManager::assemble_final_file(uint64_t transfer_id,
                                                  const std::string& file_name,
                                                  const std::string& file_hash,
                                                  const std::string& role,
-                                                 std::string& error_msg) {
+                                                 std::string& error_msg) {// 合并分片生成最终文件
     auto info = get_transfer_info(transfer_id);
     if (info.transfer_id == 0) {
         error_msg = "transfer not found";
@@ -1486,8 +1649,8 @@ std::string StorageManager::assemble_final_file(uint64_t transfer_id,
     return final_path;
 }
 
-void StorageManager::set_online(uint64_t user_id)   { redis_sadd("chatroom:online", std::to_string(user_id)); }
-void StorageManager::set_offline(uint64_t user_id)  { redis_srem("chatroom:online", std::to_string(user_id)); }
-bool StorageManager::is_online(uint64_t user_id)     { return redis_sismember("chatroom:online", std::to_string(user_id)); }
+void StorageManager::set_online(uint64_t user_id)   { redis_sadd("chatroom:online", std::to_string(user_id)); } // 标记用户上线
+void StorageManager::set_offline(uint64_t user_id)  { redis_srem("chatroom:online", std::to_string(user_id)); } // 标记用户下线
+bool StorageManager::is_online(uint64_t user_id)     { return redis_sismember("chatroom:online", std::to_string(user_id)); } // 判断用户是否在线
 
 } // namespace chatroom

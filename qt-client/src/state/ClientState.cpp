@@ -83,7 +83,9 @@ void ClientState::login(const QString &username, const QString &password) {
     login_timeout_timer_->start(LoginTimeoutMs);
 }
 
-void ClientState::registerUser(const QString &username, const QString &password, const QString &nickname) {
+void ClientState::registerUser(const QString &username, const QString &password,
+                               const QString &nickname, const QString &email,
+                               const QString &verifyCode) {
     storePendingCallback(static_cast<uint32_t>(MessageType::REGISTER_RSP),
         [this](const chatroom::ChatMessage &msg) { handleRegisterResponse(msg); });
     buildAndSend(static_cast<uint32_t>(MessageType::REGISTER_REQ), [&](chatroom::ChatMessage &m) {
@@ -91,9 +93,39 @@ void ClientState::registerUser(const QString &username, const QString &password,
         body->set_username(username.toStdString());
         body->set_password(password.toStdString());
         body->set_nickname(nickname.toStdString());
+        body->set_email(email.toStdString());
+        body->set_verify_code(verifyCode.toStdString());
     });
     pending_nickname_ = nickname;
     login_timeout_timer_->start(LoginTimeoutMs);
+}
+
+void ClientState::sendVerifyCode(const QString &channel, const QString &target,
+                                 const QString &scene) {
+    storePendingCallback(static_cast<uint32_t>(MessageType::VERIFY_CODE_RSP),
+        [this](const chatroom::ChatMessage &msg) { handleVerifyCodeResponse(msg); });
+    buildAndSend(static_cast<uint32_t>(MessageType::VERIFY_CODE_REQ), [&](chatroom::ChatMessage &m) {
+        auto *body = m.mutable_verify_code_req();
+        body->set_channel(channel.toStdString());
+        body->set_target(target.toStdString());
+        body->set_scene(scene.toStdString());
+    });
+}
+
+void ClientState::resetPassword(const QString &channel, const QString &target,
+                                const QString &verifyCode, const QString &newPassword) {
+    storePendingCallback(static_cast<uint32_t>(MessageType::PASSWORD_RESET_RSP),
+        [this](const chatroom::ChatMessage &msg) {
+            emit passwordResetResult(msg.password_reset_rsp().success(),
+                                     QString::fromStdString(msg.password_reset_rsp().error_message()));
+        });
+    buildAndSend(static_cast<uint32_t>(MessageType::PASSWORD_RESET_REQ), [&](chatroom::ChatMessage &m) {
+        auto *body = m.mutable_password_reset_req();
+        body->set_channel(channel.toStdString());
+        body->set_target(target.toStdString());
+        body->set_verify_code(verifyCode.toStdString());
+        body->set_new_password(newPassword.toStdString());
+    });
 }
 
 void ClientState::onLoginTimeout() {
@@ -158,7 +190,7 @@ void ClientState::queryFriends() {
     buildAndSend(static_cast<uint32_t>(MessageType::QUERY_FRIEND_REQ), nullptr);
 }
 
-void ClientState::addFriend(uint64_t targetUserId) {
+void ClientState::addFriend(uint64_t targetUserId, const QString &targetEmail) {
     storePendingCallback(static_cast<uint32_t>(MessageType::ADD_FRIEND_RSP),
         [this](const chatroom::ChatMessage &msg) {
             emit operationResult(msg.add_friend_rsp().success(),
@@ -167,6 +199,7 @@ void ClientState::addFriend(uint64_t targetUserId) {
     buildAndSend(static_cast<uint32_t>(MessageType::ADD_FRIEND_REQ), [&](chatroom::ChatMessage &m) {
         m.set_target_id(targetUserId);
         m.mutable_add_friend_req()->set_target_user_id(targetUserId);
+        m.mutable_add_friend_req()->set_target_email(targetEmail.toStdString());
     });
 }
 
@@ -219,7 +252,23 @@ void ClientState::unblockFriend(uint64_t targetUserId) {
 void ClientState::queryBlockedUsers() {
     storePendingCallback(static_cast<uint32_t>(MessageType::QUERY_BLOCKED_RSP),
         [this](const chatroom::ChatMessage &msg) {
-            emit operationResult(msg.query_blocked_rsp().success(), "");
+            const auto &rsp = msg.query_blocked_rsp();
+            if (!rsp.success()) {
+                emit operationResult(false,
+                    QString::fromStdString(rsp.error_message()));
+                return;
+            }
+            QVector<ContactItem> users;
+            for (const auto &f : rsp.friends()) {
+                ContactItem c;
+                c.type = ContactItem::Friend;
+                c.id = f.user_id();
+                c.name = QString::fromStdString(f.nickname().empty() ? f.username() : f.nickname());
+                c.is_online = f.is_online();
+                c.add_time = f.add_time();
+                users.append(c);
+            }
+            emit blockedUsersReceived(users);
         });
     buildAndSend(static_cast<uint32_t>(MessageType::QUERY_BLOCKED_REQ), nullptr);
 }
@@ -229,6 +278,10 @@ void ClientState::queryBlockedUsers() {
 void ClientState::createGroup(const QString &name, const QString &desc, bool isPublic) {
     storePendingCallback(static_cast<uint32_t>(MessageType::CREATE_GROUP_RSP),
         [this](const chatroom::ChatMessage &msg) {
+            if (msg.create_group_rsp().success()) {
+                queryGroupList();  // 快速刷新群组列表
+                emit systemNotification("群组创建成功");
+            }
             emit operationResult(msg.create_group_rsp().success(),
                                  QString::fromStdString(msg.create_group_rsp().error_message()));
         });
@@ -243,6 +296,10 @@ void ClientState::createGroup(const QString &name, const QString &desc, bool isP
 void ClientState::joinGroup(uint64_t groupId) {
     storePendingCallback(static_cast<uint32_t>(MessageType::JOIN_GROUP_RSP),
         [this](const chatroom::ChatMessage &msg) {
+            if (msg.join_group_rsp().success()) {
+                queryGroupList();  // 快速刷新群组列表
+                emit systemNotification("已加入群组");
+            }
             emit operationResult(msg.join_group_rsp().success(),
                                  QString::fromStdString(msg.join_group_rsp().error_message()));
         });
@@ -430,10 +487,23 @@ void ClientState::sendFileRequest(uint64_t targetId, const QString &filePath) {
 
     uint64_t fileSize = fileData.size();
     uint32_t totalChunks = (fileSize + 65535) / 65536; // 64KB chunks
+    if (totalChunks == 0) totalChunks = 1;
     QByteArray fileHashRaw = sha256Hex(fileData).toUtf8();
 
     storePendingCallback(static_cast<uint32_t>(MessageType::FILE_SEND_RSP),
-        [this](const chatroom::ChatMessage &msg) { handleFileSendResponse(msg); });
+        [this, filePath, fileData, fileSize, totalChunks, fileHashRaw]
+        (const chatroom::ChatMessage &msg) {
+            const auto &rsp = msg.file_send_rsp();
+            if (!rsp.success()) {
+                emit operationResult(false, QString::fromStdString(rsp.error_message()));
+                return;
+            }
+            uint64_t transferId = rsp.transfer_id();
+            QFileInfo info(filePath);
+            // 创建成功后逐分片上传
+            uploadNextChunk(transferId, info.fileName(), fileSize,
+                            fileData, totalChunks, 0);
+        });
 
     buildAndSend(static_cast<uint32_t>(MessageType::FILE_SEND_REQ), [&](chatroom::ChatMessage &m) {
         m.set_target_id(targetId);
@@ -445,6 +515,59 @@ void ClientState::sendFileRequest(uint64_t targetId, const QString &filePath) {
     });
 }
 
+void ClientState::uploadNextChunk(uint64_t transferId, const QString &fileName, uint64_t fileSize,
+                                  const QByteArray &fileData, uint32_t totalChunks,
+                                  uint32_t nextSeq) {
+    if (nextSeq >= totalChunks) {
+        // 全部分片上传完成，发送 finalize 让服务端组装文件
+        QByteArray fileHashRaw = sha256Hex(fileData).toUtf8();
+        storePendingCallback(static_cast<uint32_t>(MessageType::FILE_FINALIZE_RSP),
+            [this, fileName](const chatroom::ChatMessage &msg) {
+                const auto &rsp = msg.file_finalize_rsp();
+                if (rsp.success()) {
+                    emit operationResult(true, QString("文件已发送: %1").arg(fileName));
+                } else {
+                    emit operationResult(false, "文件组装失败: " +
+                        QString::fromStdString(rsp.error_message()));
+                }
+            });
+        buildAndSend(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ), [&](chatroom::ChatMessage &m) {
+            m.set_target_id(transferId);
+            auto *body = m.mutable_file_finalize_req();
+            body->set_transfer_id(transferId);
+            body->set_file_hash(fileHashRaw.toStdString());
+        });
+        return;
+    }
+
+    uint64_t offset = static_cast<uint64_t>(nextSeq) * 65536;
+    uint64_t chunkSize = qMin<uint64_t>(65536, fileSize - offset);
+    QByteArray chunkData = fileData.mid(static_cast<int>(offset), static_cast<int>(chunkSize));
+    QByteArray chunkHash = sha256Hex(chunkData).toUtf8();
+
+    storePendingCallback(static_cast<uint32_t>(MessageType::FILE_SEND_CHUNK_RSP),
+        [this, transferId, fileName, fileSize, fileData, totalChunks, nextSeq]
+        (const chatroom::ChatMessage &msg) {
+            const auto &rsp = msg.file_send_chunk_rsp();
+            if (!rsp.success()) {
+                emit operationResult(false, QString("分片 %1 上传失败: %2")
+                    .arg(nextSeq).arg(QString::fromStdString(rsp.error_message())));
+                return;
+            }
+            uploadNextChunk(transferId, fileName, fileSize, fileData, totalChunks, nextSeq + 1);
+        });
+    buildAndSend(static_cast<uint32_t>(MessageType::FILE_SEND_CHUNK_REQ), [&](chatroom::ChatMessage &m) {
+        m.set_target_id(transferId);  // 服务端用 envelope.target_id 作为 transfer_id
+        auto *body = m.mutable_file_send_chunk_req();
+        body->set_file_name(fileName.toStdString());
+        body->set_file_size(fileSize);
+        body->set_file_data(chunkData.constData(), static_cast<int>(chunkData.size()));
+        body->set_chunk_seq(nextSeq);
+        body->set_total_chunks(totalChunks);
+        body->set_chunk_hash(chunkHash.toStdString());
+    });
+}
+
 void ClientState::acceptFileTransfer(uint64_t transferId, bool accept) {
     buildAndSend(static_cast<uint32_t>(MessageType::FILE_TRANSFER_ACCEPT_REQ), [&](chatroom::ChatMessage &m) {
         auto *body = m.mutable_file_transfer_accept_req();
@@ -453,45 +576,82 @@ void ClientState::acceptFileTransfer(uint64_t transferId, bool accept) {
     });
 }
 
-void ClientState::receiveFileChunks(uint64_t transferId, const QString &savePath) {
-    storePendingCallback(static_cast<uint32_t>(MessageType::FILE_FINALIZE_RSP),
-        [this](const chatroom::ChatMessage &msg) {
-            if (msg.file_finalize_rsp().success()) {
-                emit operationResult(true, QString("File assembled: %1")
-                        .arg(QString::fromStdString(msg.file_finalize_rsp().final_path())));
-            } else {
-                emit operationResult(false, "File finalize failed");
-            }
-        });
+void ClientState::receiveFileChunks(uint64_t transferId, const QString &saveDir) {
     storePendingCallback(static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_RSP),
-        [this, transferId](const chatroom::ChatMessage &msg) {
-            if (msg.file_transfer_status_rsp().success()) {
-                const auto &r = msg.file_transfer_status_rsp();
-                // 请求缺失分片
-                std::set<uint32_t> have(r.receiver_received_chunks().begin(),
-                                        r.receiver_received_chunks().end());
-                for (uint32_t seq = 0; seq < r.total_chunks(); ++seq) {
-                    if (have.count(seq)) continue;
-                    buildAndSend(static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_REQ),
-                        [&](chatroom::ChatMessage &m) {
-                            auto *body = m.mutable_file_receive_chunk_req();
-                            body->set_transfer_id(transferId);
-                            body->set_chunk_seq(seq);
-                        });
-                }
-                // 发送 finalize 请求
-                buildAndSend(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ),
-                    [&](chatroom::ChatMessage &m) {
-                        auto *body = m.mutable_file_finalize_req();
-                        body->set_transfer_id(transferId);
-                    });
+        [this, transferId, saveDir](const chatroom::ChatMessage &msg) {
+            const auto &rsp = msg.file_transfer_status_rsp();
+            if (!rsp.success()) {
+                emit operationResult(false, "无法查询传输状态: " +
+                    QString::fromStdString(rsp.error_message()));
+                return;
             }
+            QString fileName = QString::fromStdString(rsp.file_name());
+            QString savePath = saveDir;
+            if (!savePath.isEmpty() && !savePath.endsWith('/')) savePath += '/';
+            savePath += fileName;
+            requestNextChunk(transferId, savePath, fileName, rsp.file_size(),
+                             rsp.total_chunks(), 0);
         });
     buildAndSend(static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_REQ),
         [&](chatroom::ChatMessage &m) {
             m.set_target_id(transferId);
             m.mutable_file_transfer_status_req()->set_transfer_id(transferId);
         });
+}
+
+void ClientState::requestNextChunk(uint64_t transferId, const QString &savePath,
+                                   const QString &fileName, uint64_t fileSize,
+                                   uint32_t totalChunks, uint32_t nextSeq) {
+    // 目标文件：首次打开时创建
+    if (nextSeq == 0) {
+        QFile f(savePath);
+        f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+        f.close();
+    }
+
+    if (nextSeq >= totalChunks) {
+        // 所有分片已写入，发送 finalize 让服务端校验并组装
+        storePendingCallback(static_cast<uint32_t>(MessageType::FILE_FINALIZE_RSP),
+            [this, fileName, savePath](const chatroom::ChatMessage &msg) {
+                const auto &rsp = msg.file_finalize_rsp();
+                emit operationResult(rsp.success(),
+                    rsp.success() ? QString("文件已保存: %1").arg(savePath)
+                                  : QString("文件接收失败: %1")
+                                        .arg(QString::fromStdString(rsp.error_message())));
+            });
+        buildAndSend(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ), [&](chatroom::ChatMessage &m) {
+            m.set_target_id(transferId);
+            auto *body = m.mutable_file_finalize_req();
+            body->set_transfer_id(transferId);
+        });
+        return;
+    }
+
+    storePendingCallback(static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_RSP),
+        [this, transferId, savePath, fileName, fileSize, totalChunks, nextSeq]
+        (const chatroom::ChatMessage &msg) {
+            const auto &rsp = msg.file_receive_chunk_rsp();
+            QByteArray data = QByteArray::fromStdString(rsp.file_data());
+            if (data.isEmpty()) {
+                emit operationResult(false, QString("分片 %1 接收失败").arg(nextSeq));
+                return;
+            }
+            QFile f(savePath);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Append)) {
+                f.write(data);
+                f.close();
+            } else {
+                emit operationResult(false, "无法写入文件: " + savePath);
+                return;
+            }
+            requestNextChunk(transferId, savePath, fileName, fileSize, totalChunks, nextSeq + 1);
+        });
+    buildAndSend(static_cast<uint32_t>(MessageType::FILE_RECEIVE_CHUNK_REQ), [&](chatroom::ChatMessage &m) {
+        m.set_target_id(transferId);
+        auto *body = m.mutable_file_receive_chunk_req();
+        body->set_transfer_id(transferId);
+        body->set_chunk_seq(nextSeq);
+    });
 }
 
 // ===== state =====
@@ -548,6 +708,13 @@ void ClientState::onMessageReceived(const chatroom::ChatMessage &msg) {
         auto cb = it.value();
         pending_callbacks_.erase(it);
         cb(msg);
+        return;
+    }
+
+    // verification code response
+    if (msg.type() == static_cast<uint32_t>(MessageType::VERIFY_CODE_RSP)) {
+        handleVerifyCodeResponse(msg);
+        return;
     }
 }
 
@@ -601,6 +768,11 @@ void ClientState::handleRegisterResponse(const chatroom::ChatMessage &msg) {
         token_ = QString::fromStdString(rsp.token());
         refresh_timer_->start();
     }
+}
+
+void ClientState::handleVerifyCodeResponse(const chatroom::ChatMessage &msg) {
+    const auto &rsp = msg.verify_code_rsp();
+    emit verifyCodeResult(rsp.success(), QString::fromStdString(rsp.error_message()));
 }
 
 void ClientState::handleFriendListResponse(const chatroom::ChatMessage &msg) {

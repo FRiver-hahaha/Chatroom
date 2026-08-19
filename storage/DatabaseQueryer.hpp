@@ -4,20 +4,26 @@
 #include "service/SessionState.hpp"
 #include "DatabaseQueryResult.hpp"
 #include "StorageManager.hpp"
+#include "sender/VerificationSender.hpp"
 #include <openssl/sha.h>
 #include <memory>
 #include <iostream>
 #include <utility>
+#include <vector>
+#include <algorithm>
+#include <cctype>
 #include <sys/stat.h>
 
 namespace chatroom {
 
 static constexpr size_t FILE_CHUNK_SIZE = 64 * 1024;
+static constexpr size_t MAX_MESSAGE_LENGTH = 5000;  // 最大消息长度（与客户端一致）
 
 class DatabaseQueryer {
 public:
-    explicit DatabaseQueryer(std::shared_ptr<StorageManager> storage)
-        : storage_(storage) {}
+    explicit DatabaseQueryer(std::shared_ptr<StorageManager> storage,
+                             std::shared_ptr<VerificationSender> sender = nullptr)
+        : storage_(storage), sender_(sender) {}
 
     QueryResult query(SessionState conn_state, const Message& msg) {// 查询总函数
         int tv = static_cast<int>(msg.type);
@@ -30,10 +36,73 @@ public:
     }
 
 private:
+    static constexpr int CODE_TTL = 300;         // 验证码有效期（秒）
+    static constexpr int RESEND_INTERVAL = 60;   // 重发冷却（秒）
+    static constexpr int MAX_ATTEMPTS = 5;       // 最大错误尝试次数
+
     static std::pair<std::string, std::string> split_two(const std::string& s) {// 分割字符
         size_t pos = s.find('\n');
         return (pos == std::string::npos) ? std::make_pair(s, std::string{})
                : std::make_pair(s.substr(0, pos), s.substr(pos + 1));
+    }
+
+    static std::vector<std::string> split_fields(const std::string& s, char delim = '\n') {// 按分隔符切分，保留空字段
+        std::vector<std::string> out;
+        std::string cur;
+        for (char c : s) {
+            if (c == delim) { out.push_back(std::move(cur)); cur.clear(); }
+            else cur += c;
+        }
+        out.push_back(std::move(cur));
+        return out;
+    }
+
+    static std::string normalize_email(const std::string& e) {// trim + 转小写
+        std::string s = e;
+        auto b = s.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) return "";
+        auto ep = s.find_last_not_of(" \t\r\n");
+        s = s.substr(b, ep - b + 1);
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        return s;
+    }
+
+    static std::string normalize_phone(const std::string& p) {// 仅保留数字
+        std::string out;
+        for (char c : p) if (c >= '0' && c <= '9') out += c;
+        return out;
+    }
+
+    static bool is_valid_email(const std::string& e) {// 简单邮箱格式校验 + 拒绝注入字符
+        if (e.empty() || e.size() > 254) return false;
+        // 拒绝控制字符/空格/尖括号，防 SMTP 命令/头注入（CRLF、<、> 等）
+        for (unsigned char c : e) {
+            if (c <= 0x20 || c >= 0x7f || c == '<' || c == '>') return false;
+        }
+        size_t at = e.find('@');
+        if (at == std::string::npos || at == 0 || at + 1 >= e.size()) return false;
+        if (e.find('@', at + 1) != std::string::npos) return false;  // 只允许一个 @
+        return e.find('.', at + 1) != std::string::npos;
+    }
+
+    static bool is_valid_phone(const std::string& p) {// 大陆手机号 1 开头 11 位
+        return p.size() == 11 && p[0] == '1';
+    }
+
+    // 校验验证码
+    bool verify_code_matches(const std::string& scene, const std::string& channel,
+                             const std::string& target, const std::string& code,
+                             QueryResult& err) {
+        if (storage_->incr_verify_attempt(scene, channel, target, CODE_TTL) > MAX_ATTEMPTS) {
+            err = fail("验证码错误次数过多，请重新获取");
+            return false;
+        }
+        std::string saved = storage_->load_verify_code(scene, channel, target);
+        if (saved.empty()) { err = fail("验证码已过期或未发送"); return false; }
+        if (saved != code) { err = fail("验证码错误"); return false; }
+        storage_->del_verify_code(scene, channel, target);
+        return true;
     }
 
     static QueryResult fail(const std::string& msg) {// 快速返回一个失败的查询结果
@@ -104,13 +173,34 @@ private:
     QueryResult handle_register_query(SessionState, const Message& msg) {// 注册查询
         QueryResult r;
         if (!storage_) return fail("存储服务未就绪");
-        auto [username, password_nick] = split_two(msg.payload);
-        auto [password, nickname] = split_two(password_nick);
+
+        auto parts = split_fields(msg.payload);
+        if (parts.size() < 3) return fail("注册参数不完整");
+        std::string username = parts[0];
+        std::string password = parts[1];
+        std::string nickname = parts[2];
+        std::string email     = parts.size() > 3 ? normalize_email(parts[3]) : "";
+        std::string phone     = parts.size() > 4 ? normalize_phone(parts[4]) : "";
+        std::string verify_code = parts.size() > 5 ? parts[5] : "";
         if (nickname.empty()) nickname = username;
 
         if (storage_->user_exists(username)) return fail("用户名已存在");
 
-        r = storage_->create_user(username, password, nickname);
+        bool has_email = !email.empty();
+        bool has_phone = !phone.empty();
+        if (has_email || has_phone) {
+            if (has_email && !is_valid_email(email)) return fail("邮箱格式不正确");
+            if (has_phone && !is_valid_phone(phone)) return fail("手机号格式不正确");
+            if (has_email && storage_->email_exists(email)) return fail("该邮箱已被注册");
+            if (has_phone && storage_->phone_exists(phone)) return fail("该手机号已被注册");
+            if (verify_code.empty()) return fail("请填写验证码");
+            std::string channel = has_email ? "email" : "phone";
+            std::string target  = has_email ? email : phone;
+            QueryResult err;
+            if (!verify_code_matches("register", channel, target, verify_code, err)) return err;
+        }
+
+        r = storage_->create_user(username, password, nickname, email, phone);
         if (r.success) r.token = storage_->create_session(r.user_id, username);
         return r;
     }
@@ -127,17 +217,97 @@ private:
         return r;
     }
 
-    QueryResult handle_verify_code_query(SessionState, const Message&) {// 验证密码
-        QueryResult r; r.success = true; r.verify_code = "123456"; return r;
+    QueryResult handle_verify_code_query(SessionState, const Message& msg) {// 发送验证码
+        if (!storage_) return fail("存储服务未就绪");
+        if (!sender_) return fail("验证码服务未配置");
+
+        auto parts = split_fields(msg.payload);  // channel \n target \n scene
+        if (parts.size() < 3) return fail("参数不完整");
+        std::string channel = parts[0];
+        std::string target  = parts[1];
+        std::string scene   = parts[2];
+
+        bool email = (channel == "email");
+        bool phone = (channel == "phone");
+        if (!email && !phone) return fail("不支持的发送渠道");
+        if (!sender_->supports_channel(channel))
+            return fail(email ? "邮件服务未配置" : "手机号验证暂未接入");
+
+        if (email) {
+            target = normalize_email(target);
+            if (!is_valid_email(target)) return fail("邮箱格式不正确");
+        } else {
+            target = normalize_phone(target);
+            if (!is_valid_phone(target)) return fail("手机号格式不正确");
+        }
+
+        if (scene != "register" && scene != "reset") return fail("未知验证码用途");
+
+        if (scene == "register") {
+            bool exists = email ? storage_->email_exists(target) : storage_->phone_exists(target);
+            if (exists) return fail(email ? "该邮箱已被注册" : "该手机号已被注册");
+        } else {
+            QueryResult u = email ? storage_->get_user_by_email(target)
+                                  : storage_->get_user_by_phone(target);
+            if (!u.success) return fail("该账号未注册，无法找回密码");
+        }
+
+        // 重发冷却
+        if (!storage_->try_verify_rate_limit(scene, channel, target, RESEND_INTERVAL))
+            return fail("发送过于频繁，请稍后再试");
+
+        std::string code = generate_verify_code();
+        if (!storage_->save_verify_code(scene, channel, target, code, CODE_TTL))
+            return fail("验证码存储失败");
+
+        if (!sender_->send(channel, target, code))
+            return fail("验证码发送失败，请稍后再试");
+
+        QueryResult r; r.success = true;
+        r.expire_seconds = CODE_TTL;
+        r.resend_seconds = RESEND_INTERVAL;
+        if (phone && sender_->debug_code_enabled()) r.debug_code = code;  // 仅调试模式回显
+        return r;
     }
 
-    QueryResult handle_password_reset_query(SessionState, const Message& msg) {// 重新设置密码
+    QueryResult handle_password_reset_query(SessionState, const Message& msg) {// 重置密码
         if (!storage_) return fail("存储服务未就绪");
-        auto [uid_str, new_pass] = split_two(msg.payload);
-        uint64_t uid = std::stoull(uid_str);
+
+        auto parts = split_fields(msg.payload); 
+        if (parts.size() < 4) return fail("参数不完整");
+        std::string channel      = parts[0];
+        std::string target       = parts[1];
+        std::string new_password = parts[2];
+        std::string verify_code  = parts[3];
+
+        bool email = (channel == "email");
+        bool phone = (channel == "phone");
+        if (!email && !phone) return fail("不支持的渠道");
+
+        if (email) {
+            target = normalize_email(target);
+            if (!is_valid_email(target)) return fail("邮箱格式不正确");
+        } else {
+            target = normalize_phone(target);
+            if (!is_valid_phone(target)) return fail("手机号格式不正确");
+        }
+        if (new_password.empty()) return fail("新密码不能为空");
+
+        QueryResult user = email ? storage_->get_user_by_email(target)
+                                 : storage_->get_user_by_phone(target);
+        if (!user.success) return fail("该账号未注册");
+
+        QueryResult err;
+        if (!verify_code_matches("reset", channel, target, verify_code, err)) return err;
+
         QueryResult r;
-        r.success = storage_->update_password(uid, new_pass);
-        if (!r.success) r.error_message = "重置密码失败";
+        r.success = storage_->update_password(user.user_id, new_password);
+        if (!r.success) {
+            r.error_message = "重置密码失败";
+        } else {
+            storage_->clear_session(user.user_id);  // 重置后强制下线
+            storage_->set_offline(user.user_id);
+        }
         return r;
     }
 
@@ -188,9 +358,22 @@ private:
         }
     }
 
-    QueryResult handle_add_friend_query(const Message& msg) {// 添加好友
+    QueryResult handle_add_friend_query(const Message& msg) {// 添加好友（支持用户ID或邮箱）
         QueryResult r;
-        uint64_t tid = extract_target(msg);
+        uint64_t tid = msg.target_id;  // 信封 target_id 优先
+        if (tid == 0) {
+            auto parts = split_two(msg.payload);  // 用户ID \n 邮箱
+            if (!parts.first.empty()) {
+                tid = std::stoull(parts.first);
+            } else {
+                std::string email = normalize_email(parts.second);
+                if (!is_valid_email(email)) return fail("邮箱格式不正确");
+                QueryResult u = storage_->get_user_by_email(email);
+                if (!u.success) return fail("该邮箱未注册，无法添加");
+                tid = u.user_id;
+            }
+        }
+        if (tid == msg.sender_id) return fail("不能添加自己为好友");
         if (!storage_->get_user_by_id(tid).success) return fail("目标用户不存在");
         if (storage_->is_friend(msg.sender_id, tid)) return fail("已经是好友了");
         r.success = storage_->add_friend(msg.sender_id, tid);
@@ -328,6 +511,8 @@ private:
     }
 
     QueryResult handle_private_chat_query(const Message& msg) {// 处理私聊
+        if (msg.payload.size() > MAX_MESSAGE_LENGTH)
+            return fail("消息过长（最多 5000 字），无法发送");
         if (!storage_->is_friend(msg.sender_id, msg.target_id)) return fail("不是好友，无法发送私聊");
         if (storage_->is_blocked_by(msg.target_id, msg.sender_id)) return fail("你已被对方拉黑，无法发送消息");
 
@@ -343,6 +528,8 @@ private:
     }
 
     QueryResult handle_group_chat_query(const Message& msg) {// 处理群组聊天
+        if (msg.payload.size() > MAX_MESSAGE_LENGTH)
+            return fail("消息过长（最多 5000 字），无法发送");
         if (!storage_->is_group_member(msg.group_id, msg.sender_id)) return fail("你不在该群组中");
         storage_->save_group_message(msg.group_id, msg.sender_id, msg.payload);
         QueryResult r; r.success = true;
@@ -536,7 +723,8 @@ private:
 
         storage_->complete_transfer(tid);
 
-        QueryResult r; r.success = true; r.transfer_id = tid;
+        QueryResult r; 
+        r.success = true; r.transfer_id = tid;
         r.final_path = final_path;
         r.target_user_id = info.receiver_id;
         r.file_name = info.file_name;
@@ -544,6 +732,7 @@ private:
     }
 
     std::shared_ptr<StorageManager> storage_;
+    std::shared_ptr<VerificationSender> sender_;
 };
 
 } // namespace chatroom

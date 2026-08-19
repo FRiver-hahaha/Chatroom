@@ -52,14 +52,18 @@ public:
 
     // account
     void login(const QString &username, const QString &password);
-    void registerUser(const QString &username, const QString &password, const QString &nickname);
+    void registerUser(const QString &username, const QString &password,
+                      const QString &nickname, const QString &email, const QString &verifyCode);
+    void sendVerifyCode(const QString &channel, const QString &target, const QString &scene);
+    void resetPassword(const QString &channel, const QString &target,
+                       const QString &verifyCode, const QString &newPassword);
     void logout();
     void deleteAccount(const QString &password);
     void updateNickname(const QString &nickname);
 
     // friends
     void queryFriends();
-    void addFriend(uint64_t targetUserId);
+    void addFriend(uint64_t targetUserId, const QString &targetEmail = QString());
     void deleteFriend(uint64_t targetUserId);
     void blockFriend(uint64_t targetUserId);
     void unblockFriend(uint64_t targetUserId);
@@ -89,7 +93,7 @@ public:
     // file
     void sendFileRequest(uint64_t targetId, const QString &filePath);
     void acceptFileTransfer(uint64_t transferId, bool accept);
-    void receiveFileChunks(uint64_t transferId, const QString &savePath);
+    void receiveFileChunks(uint64_t transferId, const QString &saveDir);
 
     // state accessors
     bool isLoggedIn() const { return !token_.isEmpty(); }
@@ -108,9 +112,11 @@ public:
 signals:
     void loginResult(bool success, const QString &errorMsg);
     void registerResult(bool success, const QString &errorMsg);
+    void verifyCodeResult(bool success, const QString &errorMsg);
     void operationResult(bool success, const QString &errorMsg);
     void logoutDone();
     void deleteAccountResult(bool success, const QString &errorMsg);
+    void passwordResetResult(bool success, const QString &errorMsg);
 
     void contactsUpdated();
     void currentChatChanged();
@@ -118,6 +124,7 @@ signals:
     void incomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
     void groupMessageReceived(uint64_t groupId, uint64_t senderId, const QString &senderName, const QString &content);
     void groupMembersReceived(uint64_t groupId, const QStringList &members);
+    void blockedUsersReceived(const QVector<ContactItem> &users);
     void systemNotification(const QString &text);
     void friendOnlineChanged(uint64_t userId, bool online);
 
@@ -146,8 +153,13 @@ private:
     void handleHistoryResponse(const chatroom::ChatMessage &msg);
     void handleFileSendResponse(const chatroom::ChatMessage &msg);
     void handleFileTransferNotify(const chatroom::ChatMessage &msg);
+    void uploadNextChunk(uint64_t transferId, const QString &fileName, uint64_t fileSize,
+                         const QByteArray &fileData, uint32_t totalChunks, uint32_t nextSeq);
+    void requestNextChunk(uint64_t transferId, const QString &savePath, const QString &fileName,
+                          uint64_t fileSize, uint32_t totalChunks, uint32_t nextSeq);
     void sortContacts();
     void onLoginTimeout();
+    void handleVerifyCodeResponse(const chatroom::ChatMessage &msg);
 
     ProtocolClient *client_ = nullptr;
     uint64_t user_id_ = 0;

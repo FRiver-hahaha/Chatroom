@@ -148,6 +148,10 @@ inline std::string message_type_name(MessageType type) {
         case MessageType::REGISTER_RSP: return "REGISTER_RSP";
         case MessageType::LOGOUT_REQ: return "LOGOUT_REQ";
         case MessageType::LOGOUT_RSP: return "LOGOUT_RSP";
+        case MessageType::VERIFY_CODE_REQ: return "VERIFY_CODE_REQ";
+        case MessageType::VERIFY_CODE_RSP: return "VERIFY_CODE_RSP";
+        case MessageType::PASSWORD_RESET_REQ: return "PASSWORD_RESET_REQ";
+        case MessageType::PASSWORD_RESET_RSP: return "PASSWORD_RESET_RSP";
         case MessageType::DELETE_ACCOUNT_REQ: return "DELETE_ACCOUNT_REQ";
         case MessageType::DELETE_ACCOUNT_RSP: return "DELETE_ACCOUNT_RSP";
         case MessageType::UPDATE_PROFILE_REQ: return "UPDATE_PROFILE_REQ";

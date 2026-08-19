@@ -22,6 +22,10 @@ message ChatMessage {
         LogoutResponse        delete_account_rsp  = 17;
         UpdateProfileRequest  update_profile_req  = 18;
         UpdateProfileResponse update_profile_rsp  = 19;
+        VerifyCodeRequest     verify_code_req     = 58;
+        VerifyCodeResponse    verify_code_rsp     = 59;
+        PasswordResetRequest  password_reset_req  = 60;
+        PasswordResetResponse password_reset_rsp  = 61;
 
         // 好友模块 100-19
         FriendOpRequest       add_friend_req      = 20;
@@ -105,9 +109,12 @@ message LoginResponse {
 }
 
 message RegisterRequest {
-    string username = 1;
-    string password = 2;
-    string nickname = 3;
+    string username    = 1;
+    string password    = 2;
+    string nickname    = 3;
+    string email       = 4;  // 注册绑定邮箱
+    string phone       = 5;  // 注册绑定手机号
+    string verify_code = 6;  // 验证码注册时必填
 }
 
 message RegisterResponse {
@@ -116,6 +123,32 @@ message RegisterResponse {
     uint64 user_id        = 3;
     string username       = 4;
     string token          = 5;
+}
+
+message VerifyCodeRequest {
+    string channel = 1;  // "email" | "phone"
+    string target  = 2;  // 邮箱地址 或 手机号
+    string scene   = 3;  // "register" | "reset"
+}
+
+message VerifyCodeResponse {
+    bool   success        = 1;
+    string error_message  = 2;
+    uint32 expire_seconds = 3;  // 验证码有效期（秒）
+    uint32 resend_seconds = 4;  // 重发冷却（秒）
+    string debug_code     = 5;
+}
+
+message PasswordResetRequest {
+    string channel      = 1;  // "email" | "phone"
+    string target       = 2;  // 邮箱 或 手机号
+    string new_password = 3;
+    string verify_code  = 4;
+}
+
+message PasswordResetResponse {
+    bool   success       = 1;
+    string error_message = 2;
 }
 
 message LogoutRequest {
@@ -145,6 +178,7 @@ message UpdateProfileResponse {
 
 message FriendOpRequest {
     uint64 target_user_id = 1;
+    string target_email   = 2;  // 邮箱添加好友（与 target_user_id 二选一）
 }
 
 message FriendOpResponse {

@@ -38,9 +38,40 @@
 #include <openssl/sha.h>
 #include <sqlite3.h>
 
-using chatroom::MessageType; // 简化枚举使用
+using chatroom::MessageType;
 
-// SHA-256 工具函数
+std::string read_line(const std::string& prompt);
+
+
+#define ANSI_RESET   "\033[0m"
+#define ANSI_BOLD    "\033[1m"
+#define ANSI_BOLD_RED   "\033[1;31m"
+#define ANSI_BOLD_GREEN "\033[1;32m"
+#define ANSI_BOLD_YELLOW "\033[1;33m"
+#define ANSI_BOLD_BLUE "\033[1;34m"
+#define ANSI_BOLD_CYAN "\033[1;36m"
+#define ANSI_BOLD_WHITE "\033[1;37m"
+#define ANSI_RED     "\033[31m"
+#define ANSI_GREEN   "\033[32m"
+#define ANSI_YELLOW  "\033[33m"
+#define ANSI_BLUE    "\033[34m"
+#define ANSI_MAGENTA "\033[35m"
+#define ANSI_CYAN    "\033[36m"
+#define ANSI_WHITE   "\033[37m"
+
+#define BOX_HORz    '-'    
+#define BOX_VERt    '|'    
+#define BOX_CROSS   '+'    
+#define BOX_TL      '+'    
+#define BOX_TR      '+'    
+#define BOX_BL      '+'    
+#define BOX_BR      '+'    
+
+
+#define SIDEBAR_WIDTH 20     
+#define STATUS_BAR_HEIGHT 3  
+#define BANNER_HEIGHT 7      
+
 static std::string sha256_hex(const std::string& data) {
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), hash);
@@ -51,9 +82,6 @@ static std::string sha256_hex(const std::string& data) {
     return oss.str();
 }
 
-// ============================================================
-// 本地 SQLite 存储（聊天记录落盘）
-// ============================================================
 class LocalStore {
 public:
     bool open(const std::string& username) {
@@ -89,7 +117,7 @@ public:
         close_locked();
     }
 
-    // chat_type: 0=私聊, 1=群聊；peer_id: 私聊为对方 user_id，群聊为 group_id
+
     void save_message(int chat_type, uint64_t peer_id, uint64_t sender_id,
                       const std::string& sender_name, const std::string& content,
                       uint64_t timestamp, bool is_self) {
@@ -147,15 +175,12 @@ private:
     std::mutex mu_;
 };
 
-// ============================================================
-// ChatClient 类
-// ============================================================
 class ChatClient {
 public:
     ChatClient() = default;
     ~ChatClient() { disconnect(); }
 
-    // ===== 连接管理 =====
+
     bool connect(const std::string& host, int port) {
         sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
         if (sockfd_ < 0) {
@@ -205,7 +230,7 @@ public:
     const std::string& username() const { return username_; }
     const std::string& token() const { return token_; }
 
-    // ===== 发送消息 =====
+
     bool send_message(const chatroom::ChatMessage& msg) {
         std::string payload;
         if (!msg.SerializeToString(&payload)) {
@@ -233,13 +258,13 @@ public:
         return true;
     }
 
-    // ===== 接收响应（阻塞等待指定类型） =====
+
     chatroom::ChatMessage wait_response(chatroom::MessageType expected_type, int timeout_sec = 5) {
         std::unique_lock<std::mutex> lock(resp_mutex_);
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec);
 
         while (running_.load()) {
-            // 在已有响应中查找
+        
             for (auto it = responses_.begin(); it != responses_.end(); ++it) {
                 if (it->type() == static_cast<uint32_t>(expected_type)) {
                     auto resp = *it;
@@ -248,7 +273,7 @@ public:
                 }
             }
 
-            // 也检查文本通知
+        
             for (auto it = notifications_.begin(); it != notifications_.end(); ++it) {
                 std::cout << "\r[通知] " << *it << std::endl;
                 std::cout << "> " << std::flush;
@@ -265,7 +290,7 @@ public:
         return empty;
     }
 
-    // 打印所有待处理的通知
+
     void flush_notifications() {
         std::lock_guard<std::mutex> lock(resp_mutex_);
         for (auto& n : notifications_) {
@@ -274,7 +299,7 @@ public:
         notifications_.clear();
     }
 
-    // ===== 业务接口 =====
+
 
     bool login(const std::string& user, const std::string& pass) {
         chatroom::ChatMessage msg;
@@ -308,8 +333,16 @@ public:
         }
     }
 
+
     bool register_user(const std::string& user, const std::string& pass,
-                       const std::string& nickname) {
+                       const std::string& nickname, const std::string& email) {
+    
+        if (!send_verify_code("email", email, "register")) return false;
+
+    
+        std::string input_code = read_line("  请输入收到的验证码: ");
+
+    
         chatroom::ChatMessage msg;
         msg.set_type(static_cast<uint32_t>(MessageType::REGISTER_REQ));
         msg.set_timestamp(time(nullptr));
@@ -317,6 +350,8 @@ public:
         body->set_username(user);
         body->set_password(pass);
         body->set_nickname(nickname);
+        body->set_email(email);
+        body->set_verify_code(input_code);
 
         if (!send_message(msg)) return false;
 
@@ -362,6 +397,92 @@ public:
         return true;
     }
 
+bool send_verify_code(const std::string& channel, const std::string& target, const std::string& scene) {
+    chatroom::ChatMessage msg;
+    msg.set_type(static_cast<uint32_t>(MessageType::VERIFY_CODE_REQ));
+    msg.set_token(token_);
+    msg.set_sender_id(user_id_);
+    msg.set_timestamp(time(nullptr));
+    auto* body = msg.mutable_verify_code_req();
+    body->set_channel(channel);
+    body->set_target(target);
+    body->set_scene(scene);
+
+    if (!send_message(msg)) return false;
+
+    auto resp = wait_response(MessageType::VERIFY_CODE_RSP, 10);
+    if (resp.type() != static_cast<uint32_t>(MessageType::VERIFY_CODE_RSP) || !resp.has_verify_code_rsp()) {
+        std::cerr << "[错误] 未收到验证码响应" << std::endl;
+        return false;
+    }
+
+    auto& r = resp.verify_code_rsp();
+    if (r.success()) {
+        std::cout << "[成功] 验证码已发送!" << std::endl;
+        std::cout << "  过期时间: " << r.expire_seconds() << " 秒" << std::endl;
+        std::cout << "  重发冷却: " << r.resend_seconds() << " 秒" << std::endl;
+        if (!r.error_message().empty()) {
+            std::cout << "  错误信息: " << r.error_message() << std::endl;
+        }
+    
+        if (scene == "register") {
+            std::cout << "  请在注册界面输入验证码" << std::endl;
+        } else if (scene == "reset") {
+            std::cout << "  验证码用于密码重置，请在重置界面输入" << std::endl;
+        }
+        flush_notifications();
+        return true;
+    } else {
+        std::cerr << "[失败] " << r.error_message() << std::endl;
+        flush_notifications();
+        return false;
+    }
+}
+
+    bool password_reset_flow(const std::string& email) {
+    
+        if (!send_verify_code("email", email, "reset")) return false;
+
+    
+        std::string code = read_line("  请输入收到的验证码: ");
+        std::string new_pass = read_line("  请输入新密码: ");
+        if (new_pass.empty()) {
+            std::cerr << "[失败] 新密码不能为空" << std::endl;
+            return false;
+        }
+
+    
+        chatroom::ChatMessage msg;
+        msg.set_type(static_cast<uint32_t>(MessageType::PASSWORD_RESET_REQ));
+        msg.set_token(token_);
+        msg.set_sender_id(user_id_);
+        msg.set_timestamp(time(nullptr));
+        auto* body = msg.mutable_password_reset_req();
+        body->set_channel("email");
+        body->set_target(email);
+        body->set_new_password(new_pass);
+        body->set_verify_code(code);
+
+        if (!send_message(msg)) return false;
+
+        auto resp = wait_response(MessageType::PASSWORD_RESET_RSP, 10);
+        if (resp.type() != static_cast<uint32_t>(MessageType::PASSWORD_RESET_RSP) || !resp.has_password_reset_rsp()) {
+            std::cerr << "[错误] 未收到密码重置响应" << std::endl;
+            return false;
+        }
+
+        auto& r = resp.password_reset_rsp();
+        if (r.success()) {
+            std::cout << "[成功] 密码已重置，请使用新密码登录" << std::endl;
+            flush_notifications();
+            return true;
+        } else {
+            std::cerr << "[失败] " << r.error_message() << std::endl;
+            flush_notifications();
+            return false;
+        }
+    }
+
     bool delete_account(const std::string& password) {
         chatroom::ChatMessage msg;
         msg.set_type(static_cast<uint32_t>(MessageType::DELETE_ACCOUNT_REQ));
@@ -386,7 +507,7 @@ public:
         return false;
     }
 
-    // --- 好友 ---
+
 
     bool add_friend(uint64_t target_uid) {
         chatroom::ChatMessage msg;
@@ -519,7 +640,7 @@ public:
         }
     }
 
-    // --- 群组 ---
+
 
     uint64_t create_group(const std::string& name, const std::string& desc, bool is_public) {
         chatroom::ChatMessage msg;
@@ -733,7 +854,7 @@ public:
         return handle_group_op_resp(resp, "移除群组成员");
     }
 
-    // --- 聊天 ---
+
 
     bool send_private_chat(uint64_t target_uid, const std::string& text) {
         chatroom::ChatMessage msg;
@@ -769,7 +890,7 @@ public:
 
     void get_history(uint64_t target_uid, uint64_t gid, int limit = 50) {
         chatroom::ChatMessage msg;
-        // 根据 target_uid 或 gid 决定使用哪种历史请求
+    
         if (gid > 0) {
             msg.set_type(static_cast<uint32_t>(MessageType::GET_HISTORY_REQ));
         } else {
@@ -808,13 +929,13 @@ public:
         }
     }
 
-    static constexpr size_t FILE_CHUNK_SIZE = 64 * 1024;  // 64KB
+    static constexpr size_t FILE_CHUNK_SIZE = 64 * 1024; 
 
-    // ===== 文件发送给用户 (420-439) =====
 
-    // 发送文件给指定用户
+
+
     bool send_file_to_user(uint64_t target_uid, const std::string& filepath) {
-        // 校验：必须是普通文件
+    
         struct stat st;
         if (stat(filepath.c_str(), &st) != 0) {
             std::cerr << "[错误] 无法访问文件: " << filepath << std::endl;
@@ -834,8 +955,8 @@ public:
         uint64_t fsize = ftell(fp);
         fseek(fp, 0, SEEK_SET);
 
-        // 二次校验：文件大小异常
-        if (fsize == 0 || fsize > 1024ULL * 1024 * 1024 * 10) {  // 最大 10GB
+    
+        if (fsize == 0 || fsize > 1024ULL * 1024 * 1024 * 10) { 
             std::cerr << "[错误] 文件大小异常: " << fsize << " bytes" << std::endl;
             fclose(fp); return false;
         }
@@ -851,13 +972,13 @@ public:
         std::cout << "[信息] 发送文件 " << filename << " (" << fsize << " bytes, "
                   << total_chunks << " 分片) 给 user=" << target_uid << std::endl;
 
-        // 计算完整文件哈希
+    
         std::string full_file_data(fsize, '\0');
         fread(&full_file_data[0], 1, fsize, fp);
         fseek(fp, 0, SEEK_SET);
-        std::string file_hash = sha256_hex(full_file_data);  // hex 编码，兼容 MySQL
+        std::string file_hash = sha256_hex(full_file_data); 
 
-        // Step 1: 发起文件发送请求
+    
         uint64_t transfer_id = 0;
         {
             chatroom::ChatMessage msg;
@@ -884,7 +1005,7 @@ public:
             std::cout << "[信息] 传输已创建, transfer_id=" << transfer_id << std::endl;
         }
 
-        // Step 2: 查询已上传分片（续传）
+    
         std::set<uint32_t> sent_set;
         {
             chatroom::ChatMessage status_msg;
@@ -908,7 +1029,7 @@ public:
             }
         }
 
-        // Step 3: 发送缺失的分片
+    
         uint32_t sent = sent_set.size();
         for (uint32_t seq = 0; seq < total_chunks; ++seq) {
             if (sent_set.count(seq)) continue;
@@ -923,7 +1044,7 @@ public:
             chunk_msg.set_type(static_cast<uint32_t>(MessageType::FILE_SEND_CHUNK_REQ));
             chunk_msg.set_token(token_);
             chunk_msg.set_sender_id(user_id_);
-            chunk_msg.set_target_id(transfer_id);  // transfer_id in envelope
+            chunk_msg.set_target_id(transfer_id); 
             chunk_msg.set_timestamp(time(nullptr));
             auto* cb = chunk_msg.mutable_file_send_chunk_req();
             cb->set_file_name(filename);
@@ -931,7 +1052,7 @@ public:
             cb->set_file_data(chunk_data);
             cb->set_chunk_seq(seq);
             cb->set_total_chunks(total_chunks);
-            cb->set_chunk_hash(sha256_hex(chunk_data));  // SHA-256 hex 编码
+            cb->set_chunk_hash(sha256_hex(chunk_data)); 
 
             if (!send_message(chunk_msg)) { fclose(fp); return false; }
             auto cr = wait_response(MessageType::FILE_SEND_CHUNK_RSP, 10);
@@ -947,17 +1068,17 @@ public:
 
         fclose(fp);
 
-        // Step 4: 发送 finalize 请求，服务端组装文件
+    
         {
             chatroom::ChatMessage fin_msg;
             fin_msg.set_type(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ));
             fin_msg.set_token(token_);
             fin_msg.set_sender_id(user_id_);
-            fin_msg.set_target_id(transfer_id);  // transfer_id in envelope
+            fin_msg.set_target_id(transfer_id); 
             fin_msg.set_timestamp(time(nullptr));
             auto* fb = fin_msg.mutable_file_finalize_req();
             fb->set_transfer_id(transfer_id);
-            fb->set_file_hash(file_hash);  // hex SHA-256
+            fb->set_file_hash(file_hash); 
 
             if (!send_message(fin_msg)) {
                 std::cerr << "[警告] finalize 请求发送失败" << std::endl;
@@ -978,7 +1099,7 @@ public:
         return true;
     }
 
-    // 接受/拒绝文件传输
+
     bool accept_transfer(uint64_t transfer_id, bool accept) {
         chatroom::ChatMessage msg;
         msg.set_type(static_cast<uint32_t>(MessageType::FILE_TRANSFER_ACCEPT_REQ));
@@ -1004,9 +1125,9 @@ public:
         return false;
     }
 
-    // 接收文件（拉取分片）
+
     bool receive_file_chunks(uint64_t transfer_id, const std::string& save_path) {
-        // 查询传输状态
+    
         chatroom::ChatMessage status_msg;
         status_msg.set_type(static_cast<uint32_t>(MessageType::FILE_TRANSFER_STATUS_REQ));
         status_msg.set_token(token_);
@@ -1030,7 +1151,7 @@ public:
 
         std::string out_path = save_path.empty() ? fname : save_path;
 
-        // 如果保存路径是目录，在目录下创建同名文件
+    
         struct stat path_st;
         if (stat(out_path.c_str(), &path_st) == 0 && S_ISDIR(path_st.st_mode)) {
             if (out_path.back() != '/') out_path += '/';
@@ -1041,7 +1162,7 @@ public:
         std::cout << "[信息] 接收文件: " << fname << " (" << fsize << " bytes, "
                   << total_chunks << " 分片)" << std::endl;
 
-        // 已有的分片（续传）
+    
         std::set<uint32_t> have_set;
         for (int i = 0; i < r.receiver_received_chunks_size(); ++i)
             have_set.insert(r.receiver_received_chunks(i));
@@ -1049,7 +1170,7 @@ public:
         if (!have_set.empty())
             std::cout << "[续传] 已有 " << have_set.size() << " 个分片" << std::endl;
 
-        // 打开文件（续传模式：不截断已有数据）
+    
         FILE* fp = fopen(out_path.c_str(), "r+b");
         if (!fp) fp = fopen(out_path.c_str(), "wb");
         if (!fp) {
@@ -1057,7 +1178,7 @@ public:
             return false;
         }
 
-        // 拉取缺失的分片
+    
         uint32_t received = have_set.size();
         for (uint32_t seq = 0; seq < total_chunks; ++seq) {
             if (have_set.count(seq)) continue;
@@ -1092,7 +1213,7 @@ public:
 
         fclose(fp);
 
-        // Step: 发送 finalize 请求，服务端组装文件
+    
         {
             chatroom::ChatMessage fin_msg;
             fin_msg.set_type(static_cast<uint32_t>(MessageType::FILE_FINALIZE_REQ));
@@ -1102,7 +1223,7 @@ public:
             fin_msg.set_timestamp(time(nullptr));
             auto* fb = fin_msg.mutable_file_finalize_req();
             fb->set_transfer_id(transfer_id);
-            fb->set_file_hash(r.file_hash());  // hex SHA-256 string
+            fb->set_file_hash(r.file_hash()); 
 
             if (!send_message(fin_msg)) {
                 std::cerr << "[警告] finalize 请求发送失败" << std::endl;
@@ -1123,19 +1244,19 @@ public:
         return true;
     }
 
-    // 获取缓存数据
+
     const std::vector<chatroom::FriendInfo>& cached_friends() const { return friend_cache_; }
     const std::vector<chatroom::GroupInfo>& cached_groups() const { return group_cache_; }
     const std::vector<uint64_t>& pending_transfers() const { return pending_transfers_; }
     void clear_pending_transfers() { pending_transfers_.clear(); }
 
-    // 查看本地 SQLite 聊天记录（chat_type: 0=私聊, 1=群聊）
+
     void show_local_history(int chat_type, uint64_t peer_id, int limit = 50) {
         local_store_.print_history(chat_type, peer_id, limit);
     }
 
 private:
-    // ===== 接收循环（后台线程）=====
+
     void recv_loop() {
         std::string recv_buf;
         uint32_t expected_len = 0;
@@ -1155,7 +1276,7 @@ private:
 
             recv_buf.append(tmp, n);
 
-            // 循环解析帧
+        
             while (true) {
                 if (reading_header) {
                     if (recv_buf.size() < 4) break;
@@ -1180,14 +1301,14 @@ private:
     }
 
     void process_payload(std::string payload) {
-        // 尝试解析为 Protobuf ChatMessage
+    
         chatroom::ChatMessage msg;
         if (msg.ParseFromString(payload)) {
             std::lock_guard<std::mutex> lock(resp_mutex_);
 
             uint32_t mtype = msg.type();
 
-            // 服务端推送的文件传输通知
+        
             if (mtype == static_cast<uint32_t>(MessageType::FILE_TRANSFER_NOTIFY) &&
                 msg.sender_id() != user_id_) {
                 if (msg.has_file_transfer_notify()) {
@@ -1198,13 +1319,13 @@ private:
                         + std::to_string(n.total_chunks()) + " 分片)"
                         + " [transfer_id=" + std::to_string(n.transfer_id()) + "]";
                     notifications_.push_back(info);
-                    // 同时记录 transfer_id 供后续使用
+                
                     pending_transfers_.push_back(n.transfer_id());
                 }
                 return;
             }
 
-            // 服务端推送的私聊/群聊消息：sender_id != 自己
+        
             if ((mtype == static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP) ||
                  mtype == static_cast<uint32_t>(MessageType::GROUP_CHAT_RSP)) &&
                 msg.sender_id() != user_id_) {
@@ -1222,7 +1343,7 @@ private:
                     content = msg.group_chat_rsp().content();
                 }
                 if (sender_name.empty()) sender_name = std::to_string(msg.sender_id());
-                // 落盘到本地 SQLite
+            
                 if (mtype == static_cast<uint32_t>(MessageType::PRIVATE_CHAT_RSP)) {
                     local_store_.save_message(0, msg.sender_id(), msg.sender_id(),
                                               sender_name, content, msg.timestamp(), false);
@@ -1234,20 +1355,20 @@ private:
                 return;
             }
 
-            // 正常的请求-响应或未知消息
+        
             responses_.push_back(std::move(msg));
             resp_cv_.notify_all();
         } else {
-            // 不是 Protobuf，当作纯文本通知（如离线消息、好友上线等）
+        
             std::lock_guard<std::mutex> lock(resp_mutex_);
             notifications_.push_back(std::move(payload));
         }
     }
 
-    // ===== 辅助函数 =====
+
 
     bool handle_friend_op_resp(const chatroom::ChatMessage& resp, const std::string& op_name) {
-        // 检查各个可能的 friend 响应字段
+    
         auto check_resp = [&](const chatroom::FriendOpResponse& r) -> bool {
             if (r.success()) {
                 std::cout << "[成功] " << op_name << "成功!" << std::endl;
@@ -1317,7 +1438,7 @@ private:
         return false;
     }
 
-    // ===== 成员变量 =====
+
     int sockfd_ = -1;
     std::atomic<bool> running_{false};
     std::thread recv_thread_;
@@ -1333,15 +1454,12 @@ private:
 
     std::vector<chatroom::FriendInfo> friend_cache_;
     std::vector<chatroom::GroupInfo> group_cache_;
-    std::vector<uint64_t> pending_transfers_;  // 待处理的文件传输 ID
+    std::vector<uint64_t> pending_transfers_; 
 
-    LocalStore local_store_;  // 本地 SQLite 聊天记录
+    LocalStore local_store_; 
 };
 
 
-// ============================================================
-// 终端 UI 辅助函数
-// ============================================================
 
 void clear_screen() {
     std::cout << "\033[2J\033[H" << std::flush;
@@ -1353,6 +1471,15 @@ void print_header(const std::string& title) {
 
 void print_prompt() {
     std::cout << "> " << std::flush;
+}
+
+static constexpr size_t MAX_MESSAGE_LENGTH = 5000;
+
+bool check_message_length(const std::string& text) {
+    if (text.size() <= MAX_MESSAGE_LENGTH) return true;
+    std::cout << "[失败] 消息过长（最多 " << MAX_MESSAGE_LENGTH
+              << " 字），无法发送，请删除部分内容后重试" << std::endl;
+    return false;
 }
 
 int read_choice(int max_choice) {
@@ -1383,7 +1510,7 @@ std::string read_line(const std::string& prompt) {
 
 uint64_t read_uint64(const std::string& prompt) {
     while (true) {
-        std::cout << prompt << std::flush;
+        std::cout << ANSI_BOLD_WHITE << prompt << ANSI_RESET << std::flush;
         uint64_t val;
         std::cin >> val;
         if (!std::cin.fail()) {
@@ -1392,16 +1519,58 @@ uint64_t read_uint64(const std::string& prompt) {
         }
         std::cin.clear();
         std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-        std::cerr << "[错误] 请输入有效的数字" << std::endl;
+        std::cerr << ANSI_BOLD_RED << "[错误] 请输入有效的数字" << ANSI_RESET << std::endl;
     }
 }
 
-// ============================================================
-// 子菜单
-// ============================================================
+
+int get_sidebar_x() {
+    return 2;
+}
+
+void show_status_bar(ChatClient& client, int term_width) {
+    int sidebar_end = SIDEBAR_WIDTH;
+    (void)sidebar_end;
+
+
+    std::cout << ANSI_BOLD_BLUE << BOX_TL;
+    std::cout << std::string(term_width - 2, BOX_HORz) << BOX_TR << ANSI_RESET << std::endl;
+
+
+    std::cout << ANSI_BOLD_BLUE << BOX_VERt << "  " << ANSI_RESET;
+    std::cout << ANSI_BOLD_CYAN << "ChatRoom 客户端" << ANSI_RESET;
+
+    std::cout << std::string(44, ' ') << BOX_VERt << ANSI_RESET << std::endl;
+
+
+    std::cout << ANSI_BOLD_BLUE << BOX_VERt << "  " << ANSI_RESET;
+    std::cout << std::string(term_width - 2, ' ') << BOX_VERt << ANSI_RESET << std::endl;
+
+
+    std::cout << ANSI_BOLD_BLUE << BOX_BL;
+    std::cout << std::string(term_width - 2, BOX_HORz) << BOX_BR << ANSI_RESET << std::endl;
+
+
+    std::cout << std::endl;
+    if (client.is_connected()) {
+        std::cout << ANSI_BOLD_GREEN << "  连接: 已连接" << ANSI_RESET << std::endl;
+    } else {
+        std::cout << ANSI_BOLD_RED << "  连接: 断开" << ANSI_RESET << std::endl;
+    }
+    if (client.is_logged_in()) {
+        std::cout << ANSI_BOLD_GREEN << "  身份: 已登录 [" << client.username() << "]" << ANSI_RESET << std::endl;
+    } else {
+        std::cout << ANSI_BOLD_YELLOW << "  身份: 未登录" << ANSI_RESET << std::endl;
+    }
+    std::cout << std::endl;
+}
+
 
 void menu_friend(ChatClient& client) {
     while (client.is_connected() && client.is_logged_in()) {
+    
+        (void)(80 - SIDEBAR_WIDTH - 4);
+        
         print_header("好友管理");
         std::cout << "  1. 查看好友列表" << std::endl;
         std::cout << "  2. 添加好友" << std::endl;
@@ -1409,9 +1578,10 @@ void menu_friend(ChatClient& client) {
         std::cout << "  4. 拉黑好友" << std::endl;
         std::cout << "  5. 解除拉黑" << std::endl;
         std::cout << "  6. 查看已拉黑用户" << std::endl;
+        std::cout << "  7. 私聊" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(6);
+        int choice = read_choice(7);
         switch (choice) {
             case 0: return;
             case 1: client.query_friends(); break;
@@ -1438,6 +1608,13 @@ void menu_friend(ChatClient& client) {
             case 6:
                 client.query_blocked();
                 break;
+            case 7: {
+                uint64_t uid = read_uint64("  请输入对方 user_id: ");
+                std::string text = read_line("  消息内容: ");
+                if (!check_message_length(text)) break;
+                client.send_private_chat(uid, text);
+                break;
+            }
         }
         client.flush_notifications();
     }
@@ -1445,6 +1622,9 @@ void menu_friend(ChatClient& client) {
 
 void menu_group(ChatClient& client) {
     while (client.is_connected() && client.is_logged_in()) {
+    
+        (void)(80 - SIDEBAR_WIDTH - 4);
+        
         print_header("群组管理");
         std::cout << "  1. 查看群组列表" << std::endl;
         std::cout << "  2. 创建群组" << std::endl;
@@ -1457,9 +1637,10 @@ void menu_group(ChatClient& client) {
         std::cout << "  9. 移除成员" << std::endl;
         std::cout << "  10. 拒绝加入" << std::endl;
         std::cout << "  11. 解散群组" << std::endl;
+        std::cout << "  12. 群聊" << std::endl;
         std::cout << "  0. 返回上级" << std::endl;
 
-        int choice = read_choice(11);
+        int choice = read_choice(12);
         switch (choice) {
             case 0: return;
             case 1: client.query_group_list(); break;
@@ -1520,6 +1701,13 @@ void menu_group(ChatClient& client) {
                 client.dismiss_group(gid);
                 break;
             }
+            case 12: {
+                uint64_t gid = read_uint64("  请输入 group_id: ");
+                std::string text = read_line("  消息内容: ");
+                if (!check_message_length(text)) break;
+                client.send_group_chat(gid, text);
+                break;
+            }
         }
         client.flush_notifications();
     }
@@ -1541,12 +1729,14 @@ void menu_chat(ChatClient& client) {
             case 1: {
                 uint64_t uid = read_uint64("  请输入对方 user_id: ");
                 std::string text = read_line("  消息内容: ");
+                if (!check_message_length(text)) break;
                 client.send_private_chat(uid, text);
                 break;
             }
             case 2: {
                 uint64_t gid = read_uint64("  请输入 group_id: ");
                 std::string text = read_line("  消息内容: ");
+                if (!check_message_length(text)) break;
                 client.send_group_chat(gid, text);
                 break;
             }
@@ -1609,7 +1799,7 @@ void menu_file(ChatClient& client) {
                 std::cout << std::endl;
                 uint64_t tid = read_uint64("  请输入 transfer_id (0=取消): ");
                 if (tid == 0) break;
-                // 校验输入是否在待处理列表中，避免手输错误导致“传输记录不存在”
+            
                 bool found = false;
                 for (auto t : pending) if (t == tid) { found = true; break; }
                 if (!found) {
@@ -1632,22 +1822,28 @@ void menu_file(ChatClient& client) {
     }
 }
 
-// ============================================================
-// 主菜单
-// ============================================================
 
 void main_menu(ChatClient& client) {
+    int term_width = 80;
+    
     while (client.is_connected()) {
+    
+    
+    
+        
+        show_status_bar(client, term_width);
+        
         print_header(client.is_logged_in()
-                         ? "主菜单 (已登录: " + client.username() + ")"
-                         : "主菜单 (未登录)");
+                     ? "主菜单 (已登录: " + client.username() + ")"
+                     : "主菜单 (未登录)");
 
         if (!client.is_logged_in()) {
             std::cout << "  1. 登录" << std::endl;
             std::cout << "  2. 注册" << std::endl;
+            std::cout << "  3. 密码找回" << std::endl;
             std::cout << "  0. 退出" << std::endl;
 
-            int choice = read_choice(2);
+            int choice = read_choice(3);
             switch (choice) {
                 case 0:
                     client.disconnect();
@@ -1662,7 +1858,13 @@ void main_menu(ChatClient& client) {
                     std::string user = read_line("  用户名: ");
                     std::string pass = read_line("  密码: ");
                     std::string nick = read_line("  昵称: ");
-                    client.register_user(user, pass, nick);
+                    std::string email = read_line("  邮箱: ");
+                    client.register_user(user, pass, nick, email);
+                    break;
+                }
+                case 3: {
+                    std::string email = read_line("  注册邮箱: ");
+                    client.password_reset_flow(email);
                     break;
                 }
             }
@@ -1671,11 +1873,12 @@ void main_menu(ChatClient& client) {
             std::cout << "  2. 群组管理" << std::endl;
             std::cout << "  3. 聊天" << std::endl;
             std::cout << "  4. 文件传输" << std::endl;
-            std::cout << "  5. 登出" << std::endl;
-            std::cout << "  6. 注销账号" << std::endl;
+            std::cout << "  5. 找回密码" << std::endl;
+            std::cout << "  6. 登出" << std::endl;
+            std::cout << "  7. 注销账号" << std::endl;
             std::cout << "  0. 退出" << std::endl;
 
-            int choice = read_choice(6);
+            int choice = read_choice(7);
             switch (choice) {
                 case 0:
                     client.logout();
@@ -1685,13 +1888,18 @@ void main_menu(ChatClient& client) {
                 case 2: menu_group(client); break;
                 case 3: menu_chat(client); break;
                 case 4: menu_file(client); break;
-                case 5:
+                case 5: {
+                    std::string email = read_line("  注册邮箱: ");
+                    client.password_reset_flow(email);
+                    break;
+                }
+                case 6:
                     client.logout();
                     break;
-                case 6: {
+                case 7: {
                     std::string pass = read_line("  请输入密码确认注销: ");
                     if (client.delete_account(pass)) {
-                        return; // 注销后返回登录界面
+                        return;
                     }
                     break;
                 }
@@ -1701,15 +1909,12 @@ void main_menu(ChatClient& client) {
     }
 }
 
-// ============================================================
-// main
-// ============================================================
 
 int main(int argc, char* argv[]) {
     std::string host = "127.0.0.1";
     int port = 8080;
 
-    // 从配置文件读取（若存在），命令行参数仍可覆盖
+
     chatroom::Config config;
     if (config.load("chatroom.conf")) {
         host = config.get("client", "host", host);

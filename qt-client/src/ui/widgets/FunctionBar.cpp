@@ -2,6 +2,8 @@
 #include <QVBoxLayout>
 #include <QScrollArea>
 #include <QLabel>
+#include <QToolButton>
+#include <QMenu>
 
 FunctionBar::FunctionBar(QWidget *parent)
     : QWidget(parent)
@@ -28,7 +30,19 @@ FunctionBar::FunctionBar(QWidget *parent)
 
     add_friend_btn_ = addBtn("添加好友");
     delete_friend_btn_ = addBtn("删除好友");
-    block_btn_ = addBtn("拉黑好友");
+
+    // 拉黑好友：下拉菜单集成「拉黑 / 解除拉黑 / 黑名单列表」
+    block_btn_ = new QToolButton();
+    block_btn_->setText("拉黑好友");
+    block_btn_->setPopupMode(QToolButton::InstantPopup);
+    block_btn_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    block_btn_->setMinimumHeight(32);
+    auto *blockMenu = new QMenu(block_btn_);
+    QAction *actBlock = blockMenu->addAction("拉黑好友（当前聊天）");
+    QAction *actUnblock = blockMenu->addAction("解除拉黑");
+    QAction *actQuery = blockMenu->addAction("黑名单列表");
+    block_btn_->setMenu(blockMenu);
+    layout->addWidget(block_btn_);
     friend_requests_btn_ = addBtn("好友请求");
 
     // group section
@@ -72,7 +86,9 @@ FunctionBar::FunctionBar(QWidget *parent)
     // connections
     connect(add_friend_btn_, &QPushButton::clicked, this, &FunctionBar::addFriendClicked);
     connect(delete_friend_btn_, &QPushButton::clicked, this, &FunctionBar::deleteFriendClicked);
-    connect(block_btn_, &QPushButton::clicked, this, &FunctionBar::blockFriendClicked);
+    connect(actBlock, &QAction::triggered, this, &FunctionBar::blockFriendClicked);
+    connect(actUnblock, &QAction::triggered, this, &FunctionBar::unblockFriendClicked);
+    connect(actQuery, &QAction::triggered, this, &FunctionBar::queryBlockedClicked);
     connect(friend_requests_btn_, &QPushButton::clicked, this, &FunctionBar::friendRequestsClicked);
     connect(create_group_btn_, &QPushButton::clicked, this, &FunctionBar::createGroupClicked);
     connect(join_group_btn_, &QPushButton::clicked, this, &FunctionBar::joinGroupClicked);

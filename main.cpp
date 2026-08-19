@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include "config/Config.hpp"
+#include "sender/VerificationSender.hpp"
 
 using namespace chatroom;
 
@@ -94,9 +95,17 @@ int main(int argc, char* argv[]) {
         LOG(ERROR) << "[Main] 数据库连接失败，将以 mock 模式运行";
     }
 
+    // 验证码发送器（最简：仅需 SMTP 服务器、发件邮箱、授权码三项）
+    chatroom::SmtpConfig smtp;
+    smtp.host      = config.get("smtp", "host", "");
+    smtp.from      = config.get("smtp", "from", "");
+    smtp.auth_code = config.get("smtp", "auth_code", "");
+    auto sender = std::make_shared<VerificationSender>(smtp);
+
     Server server(4);
     g_server = &server;
     server.set_storage(storage);
+    server.set_verification_sender(sender);
 
     server.set_on_connect([](Connection* conn) {
         LOG(INFO) << "[Callback] 新连接 fd=" << conn->fd;

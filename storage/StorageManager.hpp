@@ -65,12 +65,30 @@ public:
     bool user_exists(const std::string& username);
     QueryResult create_user(const std::string& username,
                             const std::string& password,
-                            const std::string& nickname);
+                            const std::string& nickname,
+                            const std::string& email = "",
+                            const std::string& phone = "");
     QueryResult get_user_by_username(const std::string& username);
     QueryResult get_user_by_id(uint64_t user_id);
+    QueryResult get_user_by_email(const std::string& email);
+    QueryResult get_user_by_phone(const std::string& phone);
+    bool email_exists(const std::string& email);
+    bool phone_exists(const std::string& phone);
     bool verify_password(const std::string& username, const std::string& password);
     bool update_password(uint64_t user_id, const std::string& new_password);
     bool update_nickname(uint64_t user_id, const std::string& nickname);
+
+    // 验证码模块
+    bool save_verify_code(const std::string& scene, const std::string& channel,
+                          const std::string& target, const std::string& code, int ttl_sec);
+    std::string load_verify_code(const std::string& scene, const std::string& channel,
+                                 const std::string& target);
+    void del_verify_code(const std::string& scene, const std::string& channel,
+                         const std::string& target);
+    bool try_verify_rate_limit(const std::string& scene, const std::string& channel,
+                               const std::string& target, int cooldown_sec);
+    int64_t incr_verify_attempt(const std::string& scene, const std::string& channel,
+                                const std::string& target, int ttl_sec);
 
     // 状态模块
     std::string create_session(uint64_t user_id, const std::string& username);
@@ -184,6 +202,8 @@ private:
     // Redis 辅助方法
     bool redis_set(const std::string& key, const std::string& value);
     bool redis_set_ex(const std::string& key, const std::string& value, int seconds);
+    bool redis_set_nx_ex(const std::string& key, const std::string& value, int seconds);
+    long long redis_incr(const std::string& key);
     std::string redis_get(const std::string& key);
     bool redis_del(const std::string& key);
     bool redis_hset(const std::string& key, const std::string& field,

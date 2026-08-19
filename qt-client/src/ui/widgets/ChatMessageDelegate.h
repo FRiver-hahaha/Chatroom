@@ -5,7 +5,7 @@
 #include <QPixmap>
 #include <QString>
 
-// 消息气泡委托：每条消息渲染为一个 ChatBubble 组件
+// 消息气泡委托：直接绘制气泡，不实例化 QWidget，保证长文本与大量消息的流畅性
 // 他人消息靠左、自己的消息靠右（类似微信/QQ）
 class ChatMessageDelegate : public QStyledItemDelegate {
     Q_OBJECT
@@ -18,10 +18,10 @@ public:
                    const QModelIndex &index) const override;
 
 private:
-    // 行号 -> (内容指纹, 已渲染气泡位图)
+    // 内容指纹 -> 已渲染气泡位图（按消息内容缓存，行号变化不影响正确性）
     struct CacheEntry {
         QString fingerprint;
         QPixmap pixmap;
     };
-    mutable QHash<int, CacheEntry> cache_;
+    mutable QHash<QString, CacheEntry> cache_;
 };

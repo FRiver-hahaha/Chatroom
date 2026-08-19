@@ -12,10 +12,12 @@ class ChatInputBar : public QWidget {
 public:
     explicit ChatInputBar(QWidget *parent = nullptr);
 
+    // 最大发送文本长度（参考微信/QQ，5000 字）
+    static constexpr int MaxTextLength = 5000;
+
 signals:
     void sendClicked(const QString &text);
     void fileUploadClicked();
-    void loadHistoryClicked();
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
@@ -24,9 +26,10 @@ private slots:
     void onSendClicked();
 
 private:
+    void updateCharCount();
+
     QTextEdit *text_edit_;
     QPushButton *send_btn_;
     QPushButton *file_btn_;
-    QPushButton *history_btn_;
     QLabel *char_count_label_;
 };

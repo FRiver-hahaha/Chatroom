@@ -5,6 +5,7 @@
 #include <QStackedWidget>
 #include <QSplitter>
 #include <QLabel>
+#include <QModelIndex>
 #include "state/ClientState.h"
 #include "models/ChatMessageModel.h"
 #include "models/ContactListModel.h"
@@ -24,12 +25,17 @@ private slots:
     void onContactClicked(const QModelIndex &index);
     void onSendMessage(const QString &text);
     void onFileUpload();
-    void onLoadHistory();
+    void onHistoryLoadRequested();
+    void onFileTransferNotify(uint64_t transferId, uint64_t senderId,
+                              const QString &senderName, const QString &fileName,
+                              uint64_t fileSize);
 
     // function bar actions
     void onAddFriend();
     void onDeleteFriend();
     void onBlockFriend();
+    void onUnblockFriend();
+    void onQueryBlocked();
     void onFriendRequests();
     void onCreateGroup();
     void onJoinGroup();
@@ -51,11 +57,14 @@ private slots:
     void onSystemNotification(const QString &text);
     void onIncomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
     void onGroupMembersReceived(uint64_t groupId, const QStringList &members);
+    void onBlockedUsersReceived(const QVector<ContactItem> &users);
 
 private:
     void setupUi();
     void setupConnections();
     void updateRightPanel();
+    void saveScrollState();
+    void restoreScrollState();
 
     QSplitter *main_splitter_;
 
@@ -70,7 +79,15 @@ private:
     ChatInputBar *input_bar_;
 
     // right
-    QStackedWidget *right_stack_;
+    QWidget *right_panel_;
     InfoPanel *info_panel_;
     FunctionBar *function_bar_;
+
+    // 历史记录加载（微信式上滑加载）
+    bool history_loading_ = false;
+    int history_limit_ = 50;
+    QModelIndex top_visible_index_;
+    bool at_bottom_ = true;
+
+    QLabel *my_id_label_ = nullptr;
 };

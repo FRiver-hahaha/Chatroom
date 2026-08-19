@@ -112,6 +112,8 @@ public:
     void set_on_send(std::function<void(Connection*, int)> cb) { on_send_ = std::move(cb); }
     void set_on_close(std::function<void(Connection*)> cb) { on_close_ = std::move(cb); }
     void set_storage(std::shared_ptr<StorageManager> s) { storage_ = std::move(s); }
+    void set_verification_sender(std::shared_ptr<VerificationSender> s) { verification_sender_ = std::move(s); }
+    std::shared_ptr<VerificationSender> verification_sender() const { return verification_sender_; }
 
     bool start(const std::string& host, int port);
     void run();
@@ -191,6 +193,7 @@ private:
     std::function<void(Connection*)> on_close_;
 
     std::shared_ptr<StorageManager> storage_;
+    std::shared_ptr<VerificationSender> verification_sender_;
 };
 
 }

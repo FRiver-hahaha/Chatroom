@@ -448,7 +448,7 @@ void Server::cleanup_timeout_connections() {
 Connection::~Connection() = default;
 
 void Connection::init_business(std::shared_ptr<StorageManager> storage, Server* server) {
-    db_queryer_ = std::make_unique<DatabaseQueryer>(storage);
+    db_queryer_ = std::make_unique<DatabaseQueryer>(storage, server->verification_sender());
     dispatcher_ = std::make_unique<MessageDispatcher>(
         [server](int fd, const std::string& data) {
             server->send_to_async(fd, data);

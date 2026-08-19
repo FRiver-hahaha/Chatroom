@@ -25,41 +25,53 @@ ChatInputBar::ChatInputBar(QWidget *parent)
     text_edit_->setMinimumHeight(36);
     editLayout->addWidget(text_edit_);
 
-    char_count_label_ = new QLabel(QString::fromUtf8("0 字"));
+    char_count_label_ = new QLabel(QString::fromUtf8("0/5000 字"));
     char_count_label_->setAlignment(Qt::AlignRight);
     char_count_label_->setStyleSheet("font-size: 10px; color: #999; padding-right: 2px;");
     editLayout->addWidget(char_count_label_);
 
     barLayout->addWidget(editBox, 1);
 
-    send_btn_ = new QPushButton("发送");
-    send_btn_->setMinimumWidth(60);
-    barLayout->addWidget(send_btn_);
-
     file_btn_ = new QPushButton("文件");
     file_btn_->setMinimumWidth(50);
     barLayout->addWidget(file_btn_);
 
-    history_btn_ = new QPushButton("历史");
-    history_btn_->setMinimumWidth(50);
-    barLayout->addWidget(history_btn_);
+    send_btn_ = new QPushButton("发送");
+    send_btn_->setMinimumWidth(60);
+    barLayout->addWidget(send_btn_);
 
     mainLayout->addWidget(bar);
 
     connect(send_btn_, &QPushButton::clicked, this, &ChatInputBar::onSendClicked);
 
-    connect(text_edit_, &QTextEdit::textChanged, this, [this]() {
-        char_count_label_->setText(
-            QString("%1 字").arg(text_edit_->toPlainText().size()));
-    });
+    connect(text_edit_, &QTextEdit::textChanged, this, &ChatInputBar::updateCharCount);
 
     connect(file_btn_, &QPushButton::clicked, this, &ChatInputBar::fileUploadClicked);
-    connect(history_btn_, &QPushButton::clicked, this, &ChatInputBar::loadHistoryClicked);
+}
+
+void ChatInputBar::updateCharCount() {
+    int len = text_edit_->toPlainText().trimmed().size();
+    if (len > MaxTextLength) {
+        char_count_label_->setStyleSheet(
+            "font-size: 10px; color: red; padding-right: 2px;");
+        char_count_label_->setText(
+            QString::fromUtf8("%1/%2 字，已超出上限，无法发送")
+                .arg(len).arg(MaxTextLength));
+    } else {
+        char_count_label_->setStyleSheet(
+            "font-size: 10px; color: #999; padding-right: 2px;");
+        char_count_label_->setText(
+            QString::fromUtf8("%1/%2 字").arg(len).arg(MaxTextLength));
+    }
 }
 
 void ChatInputBar::onSendClicked() {
     QString text = text_edit_->toPlainText().trimmed();
     if (text.isEmpty()) return;
+    if (text.size() > MaxTextLength) {
+        updateCharCount();
+        return;
+    }
     emit sendClicked(text);
     text_edit_->clear();
 }

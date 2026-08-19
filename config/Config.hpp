@@ -6,12 +6,11 @@
 
 namespace chatroom {
 
-// 极简 INI 解析器：支持 [section] / key = value / # 注释，header-only，无第三方依赖
 class Config {
 public:
     bool load(const std::string& path) {
         std::ifstream in(path);
-        if (!in.is_open()) return false;   // 文件不存在：调用方回退默认值
+        if (!in.is_open()) return false;
         kv_.clear();
         std::string section, line;
         while (std::getline(in, line)) {

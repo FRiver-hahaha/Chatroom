@@ -17,6 +17,10 @@
 #include <QFileDialog>
 #include <QScrollBar>
 #include <QRandomGenerator>
+#include <QDialog>
+#include <QListWidget>
+#include <QMap>
+#include <QPushButton>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -72,7 +76,6 @@ void MainWindow::setupUi() {
     message_list_->setSelectionMode(QAbstractItemView::NoSelection);
     message_list_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     message_list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    message_list_->setWordWrap(true);
     message_list_->setStyleSheet(
         "QListView { background-color: #f5f5f5; border: none; }");
     message_list_->setItemDelegate(new ChatMessageDelegate(message_list_));
@@ -83,19 +86,21 @@ void MainWindow::setupUi() {
 
     main_splitter_->addWidget(centerWidget);
 
-    // ===== right panel =====
-    right_stack_ = new QStackedWidget();
-    right_stack_->setMinimumWidth(180);
-    right_stack_->setMaximumWidth(250);
+    // ===== right panel: 联系人信息 + 功能按钮（始终可见）=====
+    right_panel_ = new QWidget();
+    right_panel_->setMinimumWidth(180);
+    right_panel_->setMaximumWidth(250);
+    auto *rightLayout = new QVBoxLayout(right_panel_);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(0);
 
     info_panel_ = new InfoPanel();
-    right_stack_->addWidget(info_panel_);
+    rightLayout->addWidget(info_panel_);
 
     function_bar_ = new FunctionBar();
-    right_stack_->addWidget(function_bar_);
+    rightLayout->addWidget(function_bar_, 1);
 
-    right_stack_->setCurrentWidget(info_panel_);
-    main_splitter_->addWidget(right_stack_);
+    main_splitter_->addWidget(right_panel_);
 
     // set splitter proportions: 20:55:25
     main_splitter_->setStretchFactor(0, 2);
@@ -112,7 +117,12 @@ void MainWindow::setupConnections() {
 
     connect(input_bar_, &ChatInputBar::sendClicked, this, &MainWindow::onSendMessage);
     connect(input_bar_, &ChatInputBar::fileUploadClicked, this, &MainWindow::onFileUpload);
-    connect(input_bar_, &ChatInputBar::loadHistoryClicked, this, &MainWindow::onLoadHistory);
+
+    // 微信式上滑加载历史记录
+    connect(message_list_->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, [this](int value) {
+        if (value <= 0 && !history_loading_) onHistoryLoadRequested();
+    });
 
     connect(state, &ClientState::contactsUpdated, this, &MainWindow::onContactsUpdated);
     connect(state, &ClientState::messagesUpdated, this, &MainWindow::onMessagesUpdated);
@@ -120,11 +130,15 @@ void MainWindow::setupConnections() {
     connect(state, &ClientState::systemNotification, this, &MainWindow::onSystemNotification);
     connect(state, &ClientState::incomingMessage, this, &MainWindow::onIncomingMessage);
     connect(state, &ClientState::groupMembersReceived, this, &MainWindow::onGroupMembersReceived);
+    connect(state, &ClientState::blockedUsersReceived, this, &MainWindow::onBlockedUsersReceived);
+    connect(state, &ClientState::fileTransferNotify, this, &MainWindow::onFileTransferNotify);
 
     // function bar
     connect(function_bar_, &FunctionBar::addFriendClicked, this, &MainWindow::onAddFriend);
     connect(function_bar_, &FunctionBar::deleteFriendClicked, this, &MainWindow::onDeleteFriend);
     connect(function_bar_, &FunctionBar::blockFriendClicked, this, &MainWindow::onBlockFriend);
+    connect(function_bar_, &FunctionBar::unblockFriendClicked, this, &MainWindow::onUnblockFriend);
+    connect(function_bar_, &FunctionBar::queryBlockedClicked, this, &MainWindow::onQueryBlocked);
     connect(function_bar_, &FunctionBar::friendRequestsClicked, this, &MainWindow::onFriendRequests);
     connect(function_bar_, &FunctionBar::createGroupClicked, this, &MainWindow::onCreateGroup);
     connect(function_bar_, &FunctionBar::joinGroupClicked, this, &MainWindow::onJoinGroup);
@@ -141,6 +155,16 @@ void MainWindow::setupConnections() {
 }
 
 void MainWindow::onLoginSuccess() {
+    // 右下角显示本人 ID 与昵称
+    auto *state = ClientState::instance();
+    if (!my_id_label_) {
+        my_id_label_ = new QLabel();
+        my_id_label_->setStyleSheet("font-size: 11px; color: #888;");
+        statusBar()->addPermanentWidget(my_id_label_);
+    }
+    my_id_label_->setText(QString("我的ID: %1 | %2")
+        .arg(state->userId())
+        .arg(state->nickname().isEmpty() ? state->username() : state->nickname()));
     show();
 }
 
@@ -151,9 +175,12 @@ void MainWindow::onContactClicked(const QModelIndex &index) {
     if (index.row() < 0 || index.row() >= contacts.size()) return;
 
     const auto &c = contacts[index.row()];
+    history_limit_ = 50;
+    history_loading_ = false;
     if (c.type == ContactItem::Friend) {
         ClientState::instance()->setCurrentChat(ChatType::Private, c.id);
         chat_title_->setText(c.name + (c.is_online ? " [在线]" : " [离线]"));
+        function_bar_->setGroupMode(false, "");
         updateRightPanel();
     } else {
         ClientState::instance()->setCurrentChat(ChatType::Group, 0, c.group_id);
@@ -173,9 +200,25 @@ void MainWindow::onContactsUpdated() {
     }
 }
 
+void MainWindow::saveScrollState() {
+    auto *bar = message_list_->verticalScrollBar();
+    at_bottom_ = (bar->value() + bar->pageStep() >= bar->maximum() - 20);
+    top_visible_index_ = message_list_->indexAt(QPoint(2, 2));
+}
+
+void MainWindow::restoreScrollState() {
+    if (at_bottom_) {
+        message_list_->scrollToBottom();
+    } else if (top_visible_index_.isValid()) {
+        message_list_->scrollTo(top_visible_index_, QAbstractItemView::PositionAtTop);
+    }
+}
+
 void MainWindow::onMessagesUpdated() {
     auto *state = ClientState::instance();
     const auto &msgs = state->currentChatMessages();
+
+    saveScrollState();
 
     // 增量追加，避免全量 reset 造成滚动抖动，保证流畅体验
     if (msgs.size() >= message_model_->rowCount()) {
@@ -184,8 +227,9 @@ void MainWindow::onMessagesUpdated() {
     } else {
         message_model_->setMessages(msgs);
     }
-    // scroll to bottom
-    message_list_->scrollToBottom();
+
+    history_loading_ = false;
+    restoreScrollState();
 }
 
 void MainWindow::onChatChanged() {
@@ -215,12 +259,12 @@ void MainWindow::updateRightPanel() {
     for (const auto &c : contacts) {
         if (c.type == ContactItem::Friend && c.id == state->currentTargetId()) {
             info_panel_->showContactInfo(c);
-            right_stack_->setCurrentWidget(info_panel_);
+            function_bar_->setGroupMode(false, "");
             return;
         }
         if (c.type == ContactItem::Group && c.group_id == state->currentGroupId()) {
             info_panel_->showContactInfo(c);
-            right_stack_->setCurrentWidget(function_bar_);
+            function_bar_->setGroupMode(true, c.role);
             return;
         }
     }
@@ -250,13 +294,41 @@ void MainWindow::onFileUpload() {
     state->sendFileRequest(state->currentTargetId(), filePath);
 }
 
-void MainWindow::onLoadHistory() {
+void MainWindow::onHistoryLoadRequested() {
     auto *state = ClientState::instance();
+    if (message_model_->rowCount() == 0) return;
+
+    history_loading_ = true;
+    history_limit_ += 30;
     if (state->currentChatType() == ChatType::Private) {
-        state->getHistory(state->currentTargetId(), 0);
+        state->getHistory(state->currentTargetId(), 0, history_limit_);
     } else {
-        state->getHistory(0, state->currentGroupId());
+        state->getHistory(0, state->currentGroupId(), history_limit_);
     }
+}
+
+void MainWindow::onFileTransferNotify(uint64_t transferId, uint64_t senderId,
+                                      const QString &senderName, const QString &fileName,
+                                      uint64_t fileSize) {
+    Q_UNUSED(senderId)
+    QString sizeText;
+    if (fileSize >= 1024 * 1024)
+        sizeText = QString::number(fileSize / 1024.0 / 1024.0, 'f', 1) + " MB";
+    else
+        sizeText = QString::number(fileSize / 1024.0, 'f', 1) + " KB";
+
+    auto ret = QMessageBox::question(this, "文件传输",
+        QString("%1 向你发送文件:\n%2 (%3)\n\n是否接收？")
+            .arg(senderName, fileName, sizeText));
+    if (ret != QMessageBox::Yes) {
+        ClientState::instance()->acceptFileTransfer(transferId, false);
+        return;
+    }
+
+    ClientState::instance()->acceptFileTransfer(transferId, true);
+    QString dir = QFileDialog::getExistingDirectory(this, "选择保存目录");
+    if (dir.isEmpty()) return;
+    ClientState::instance()->receiveFileChunks(transferId, dir);
 }
 
 // ===== function bar actions =====
@@ -265,11 +337,25 @@ void MainWindow::onAddFriend() {
     auto *dlg = new AddFriendDialog(this);
     if (dlg->exec() == QDialog::Accepted) {
         uint64_t uid = dlg->userId();
-        if (uid > 0) {
-            ClientState::instance()->addFriend(uid);
-        } else if (!dlg->email().isEmpty()) {
-            QMessageBox::information(this, "提示", "邮箱搜索需要服务端支持");
+        QString email = dlg->email();
+        if (uid == 0 && email.isEmpty()) {
+            QMessageBox::warning(this, "提示", "请填写用户ID或邮箱");
+            return;
         }
+        auto *state = ClientState::instance();
+        auto *conn = new QMetaObject::Connection();
+        *conn = connect(state, &ClientState::operationResult, this,
+            [this, conn, state](bool ok, const QString &err) {
+                disconnect(*conn);
+                delete conn;
+                if (ok) {
+                    state->queryFriends();  // 刷新好友列表
+                    QMessageBox::information(this, "提示", "添加好友成功");
+                } else {
+                    QMessageBox::warning(this, "提示", "添加好友失败: " + err);
+                }
+            });
+        state->addFriend(uid, email);
     }
     dlg->deleteLater();
 }
@@ -286,12 +372,93 @@ void MainWindow::onDeleteFriend() {
 
 void MainWindow::onBlockFriend() {
     auto *state = ClientState::instance();
-    if (state->currentChatType() != ChatType::Private) return;
+    if (state->currentChatType() != ChatType::Private) {
+        QMessageBox::information(this, "提示", "请先选择一个好友聊天，再执行拉黑操作");
+        return;
+    }
 
     auto ret = QMessageBox::question(this, "确认", "确定要拉黑该好友吗？");
     if (ret == QMessageBox::Yes) {
         state->blockFriend(state->currentTargetId());
     }
+}
+
+void MainWindow::onUnblockFriend() {
+    bool ok;
+    uint64_t uid = QInputDialog::getText(this, "解除拉黑",
+        "输入要解除拉黑的好友ID:").toULongLong(&ok);
+    if (!ok || uid == 0) return;
+
+    auto *state = ClientState::instance();
+    auto *conn = new QMetaObject::Connection();
+    *conn = connect(state, &ClientState::operationResult, this,
+        [this, conn, state](bool success, const QString &err) {
+            disconnect(*conn);
+            delete conn;
+            if (success) {
+                state->queryFriends();  // 刷新好友列表
+                QMessageBox::information(this, "提示", "已解除拉黑");
+            } else {
+                QMessageBox::warning(this, "提示", "解除拉黑失败: " + err);
+            }
+        });
+    state->unblockFriend(uid);
+}
+
+void MainWindow::onQueryBlocked() {
+    ClientState::instance()->queryBlockedUsers();
+}
+
+void MainWindow::onBlockedUsersReceived(const QVector<ContactItem> &users) {
+    if (users.isEmpty()) {
+        QMessageBox::information(this, "黑名单", "当前黑名单为空");
+        return;
+    }
+
+    auto *dlg = new QDialog(this);
+    dlg->setWindowTitle("黑名单列表");
+    dlg->setMinimumWidth(320);
+
+    auto *layout = new QVBoxLayout(dlg);
+    auto *list = new QListWidget(dlg);
+    QMap<QString, uint64_t> idByText;
+    for (const auto &u : users) {
+        QString text = QString("%1 (ID: %2)%3")
+            .arg(u.name).arg(u.id).arg(u.is_online ? " [在线]" : " [离线]");
+        idByText.insert(text, u.id);
+        list->addItem(text);
+    }
+    layout->addWidget(list);
+
+    auto *unblockBtn = new QPushButton("解除选中好友的拉黑", dlg);
+    layout->addWidget(unblockBtn);
+
+    connect(unblockBtn, &QPushButton::clicked, this, [this, dlg, list, idByText]() {
+        auto *item = list->currentItem();
+        if (!item) {
+            QMessageBox::information(dlg, "提示", "请先选择一个好友");
+            return;
+        }
+        uint64_t uid = idByText.value(item->text());
+        auto *state = ClientState::instance();
+        auto *conn = new QMetaObject::Connection();
+        *conn = connect(state, &ClientState::operationResult, this,
+            [this, dlg, conn, state](bool success, const QString &err) {
+                disconnect(*conn);
+                delete conn;
+                if (success) {
+                    state->queryFriends();
+                    dlg->accept();
+                    QMessageBox::information(this, "提示", "已解除拉黑");
+                } else {
+                    QMessageBox::warning(this, "提示", "解除拉黑失败: " + err);
+                }
+            });
+        state->unblockFriend(uid);
+    });
+
+    dlg->exec();
+    dlg->deleteLater();
 }
 
 void MainWindow::onFriendRequests() {
@@ -374,7 +541,6 @@ void MainWindow::onViewMembers() {
 void MainWindow::onGroupMembersReceived(uint64_t groupId, const QStringList &members) {
     Q_UNUSED(groupId)
     info_panel_->showGroupMembers(members);
-    right_stack_->setCurrentWidget(info_panel_);
 }
 
 void MainWindow::onDismissGroup() {
