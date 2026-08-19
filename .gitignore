@@ -1,33 +1,53 @@
-# 构建产物
+# ==================== 编译生成文件 ====================
 build/
-
-# IDE / 编辑器
-.vscode/
-.cache/
-.claude/
-
-# 调试日志
-errorlog.md
-
-# 编译生成文件
 *.o
+*.obj
+*.so
+*.so.*
+*.a
+*.dll
+*.dylib
+*.exe
 *.out
 *.pb.cc
 *.pb.h
+qt-client/.qmake.stash
+CMakeLists.txt.user
+.qmake.stash
 
-# 链接库
-*.a
-*.so
-*.dylib
-*.dll
+# ==================== 运行时产生的数据文件 ====================
+dump.rdb
+logs/
+*.log
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.pid
 
-# 临时文件
+# ==================== 包含敏感信息的本地配置文件 ====================
+# 真实配置不入库，请复制对应 .template / .example 后填写本地值
+chatroom.conf
+server.conf
+*.local.conf
+.env
+.env.*
+!.env.example
+*.secret
+
+# ==================== 包含数据库密码/认证凭证的脚本 ====================
+# 请复制 scripts/dump_db.sh.example 后填写本地数据库密码
+scripts/dump_db.sh
+
+# ==================== IDE 目录和系统文件 ====================
+.vscode/
+.idea/
+.cache/
+.claude/
+.DS_Store
+Thumbs.db
 *.swp
 *.swo
 *~
-
-# 系统文件
-.DS_Store
-Thumbs.db
 core
 *.core

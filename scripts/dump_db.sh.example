@@ -1,12 +1,15 @@
 #!/bin/bash
 # ============================================================
-# ChatRoom 数据库查看工具
-# 使用方法:
-#   ./scripts/dump_db.sh          — 查看所有用户
-#   ./scripts/dump_db.sh 1001     — 查看指定 user_id 的完整信息
+# ChatRoom 数据库查看工具（模板）
+# 使用方法：
+#   1. 复制为 dump_db.sh：cp scripts/dump_db.sh.example scripts/dump_db.sh
+#   2. 将 MYSQL_PASSWORD 占位符替换为本地 MySQL 密码
+#   3. 运行 ./scripts/dump_db.sh          — 查看所有用户
+#        ./scripts/dump_db.sh 1001       — 查看指定 user_id 的完整信息
+# 注意：scripts/dump_db.sh 含数据库密码，已被 .gitignore 忽略
 # ============================================================
 
-MYSQL_CMD="mysql -u chatroom -p'Chatroom@2026#Secure' chatroom"
+MYSQL_CMD="mysql -u chatroom -p'<在此填写数据库密码>' chatroom"
 REDIS_CMD="redis-cli"
 
 echo "=========================================="

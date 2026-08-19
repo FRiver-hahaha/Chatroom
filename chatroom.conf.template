@@ -1,0 +1,28 @@
+# ============================================================
+# ChatRoom 配置文件模板
+# 使用方法：复制为 chatroom.conf 并替换占位符后本地使用
+#   cp chatroom.conf.template chatroom.conf
+# 注意：chatroom.conf 含敏感信息（SMTP 授权码），已被 .gitignore 忽略
+# ============================================================
+
+[server]
+# 监听地址：0.0.0.0 = 监听所有网卡（本机回环 + 局域网均可连）
+host = 0.0.0.0
+port = 8080
+
+[client]
+# 客户端默认连接地址：
+#   本机调试   -> 127.0.0.1
+#   局域网联调 -> 改成服务器的局域网 IP
+host = 127.0.0.1
+port = 8080
+
+[smtp]
+# 验证码邮件发送（最简配置：仅需以下三项）
+#   host      : SMTP 服务器地址（如 QQ: smtp.qq.com / 163: smtp.163.com）
+#   from      : 发件邮箱（需在邮箱设置中开启 SMTP 服务）
+#   auth_code : 邮箱授权码（开启 SMTP 后生成，不是登录密码）
+# 未配置时验证码发送功能不可用，注册/找回密码会提示「邮件服务未配置」
+host = smtp.qq.com
+from = your_email@example.com
+auth_code = <在此填写邮箱授权码>
