@@ -46,6 +46,9 @@ server.conf
 # 请复制 scripts/dump_db.sh.example 后填写本地数据库密码
 scripts/dump_db.sh
 
+# ==================== 本地设计文档 ====================
+design/
+
 # ==================== IDE 目录和系统文件 ====================
 .vscode/
 .idea/
