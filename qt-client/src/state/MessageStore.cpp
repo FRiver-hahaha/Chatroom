@@ -79,6 +79,28 @@ void MessageStore::storeMessage(const MessageItem &msg, bool isGroup,
     q.exec();
 }
 
+void MessageStore::confirmMessage(const MessageItem &msg, bool isGroup,
+                                  uint64_t peerId, uint64_t groupId) {
+    if (!ready_ || msg.message_id == 0) return;
+    QSqlDatabase db = QSqlDatabase::database("chatroom_local");
+    QSqlQuery del(db);
+    // 删除尚未确认的乐观消息（同发送者、同内容、时间窗口内）
+    del.prepare("DELETE FROM messages WHERE server_id IS NULL"
+                " AND chat_type=? AND peer_id=? AND group_id=?"
+                " AND sender_id=? AND content=?"
+                " AND timestamp BETWEEN ? AND ?");
+    del.addBindValue(isGroup ? 1 : 0);
+    del.addBindValue(static_cast<qulonglong>(peerId));
+    del.addBindValue(static_cast<qulonglong>(groupId));
+    del.addBindValue(static_cast<qulonglong>(msg.sender_id));
+    del.addBindValue(msg.content);
+    del.addBindValue(static_cast<qulonglong>(msg.timestamp > 300 ? msg.timestamp - 300 : 0));
+    del.addBindValue(static_cast<qulonglong>(msg.timestamp + 300));
+    del.exec();
+    // 再写入服务端确认后的正式记录（带 server_id）
+    storeMessage(msg, isGroup, peerId, groupId);
+}
+
 QVector<MessageItem> MessageStore::loadHistory(bool isGroup, uint64_t peerId,
                                                uint64_t groupId, int limit) {
     QVector<MessageItem> result;
@@ -88,13 +110,14 @@ QVector<MessageItem> MessageStore::loadHistory(bool isGroup, uint64_t peerId,
     q.prepare("SELECT server_id, sender_id, sender_name, content, timestamp, is_self,"
               " msg_type, file_name, file_path FROM messages"
               " WHERE chat_type=? AND peer_id=? AND group_id=?"
-              " ORDER BY timestamp ASC, id ASC LIMIT ?");
+              " ORDER BY timestamp DESC, id DESC LIMIT ?");
     q.addBindValue(isGroup ? 1 : 0);
     q.addBindValue(static_cast<qulonglong>(peerId));
     q.addBindValue(static_cast<qulonglong>(groupId));
     q.addBindValue(limit);
     if (!q.exec()) return result;
 
+    // 倒序查询得到“最新在前”，翻转回“旧 -> 新”的展示顺序
     while (q.next()) {
         MessageItem item;
         item.message_id = q.value(0).toULongLong();
@@ -107,7 +130,7 @@ QVector<MessageItem> MessageStore::loadHistory(bool isGroup, uint64_t peerId,
         item.file_name = q.value(7).toString();
         item.file_path = q.value(8).toString();
         item.status = MessageItem::Sent;
-        result.append(item);
+        result.prepend(item);
     }
     return result;
 }
@@ -120,4 +143,10 @@ void MessageStore::clearChat(bool isGroup, uint64_t peerId, uint64_t groupId) {
     q.addBindValue(static_cast<qulonglong>(peerId));
     q.addBindValue(static_cast<qulonglong>(groupId));
     q.exec();
+}
+
+void MessageStore::clearAll() {
+    if (!ready_) return;
+    QSqlQuery q(QSqlDatabase::database("chatroom_local"));
+    q.exec("DELETE FROM messages");
 }

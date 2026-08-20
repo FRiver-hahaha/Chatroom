@@ -134,6 +134,11 @@ public:
                 msg.group_id = proto_msg.reject_join_group_req().group_id();
                 msg.target_id = proto_msg.reject_join_group_req().target_user_id();
                 break;
+            case ChatMessage::kRenameGroupReq:
+                msg.payload = std::to_string(proto_msg.rename_group_req().group_id()) + "\n"
+                            + proto_msg.rename_group_req().new_group_name();
+                msg.group_id = proto_msg.rename_group_req().group_id();
+                break;
             case ChatMessage::kHeartbeatReq:
                 msg.payload = "";
                 break;
@@ -146,7 +151,8 @@ public:
             case ChatMessage::kGetHistoryReq:
                 msg.payload = std::to_string(proto_msg.get_history_req().target_user_id()) + "\n"
                             + std::to_string(proto_msg.get_history_req().group_id()) + "\n"
-                            + std::to_string(proto_msg.get_history_req().limit());
+                            + std::to_string(proto_msg.get_history_req().limit()) + "\n"
+                            + std::to_string(proto_msg.get_history_req().before_id());
                 break;
             case ChatMessage::kFileSendReq:
                 msg.payload = proto_msg.file_send_req().file_name();
@@ -494,6 +500,16 @@ public:
                 if (result.success) {
                     body->set_group_id(result.group_id);
                     fill_members(body, result.group_members);
+                } else {
+                    body->set_error_message(result.error_message);
+                }
+                break;
+            }
+            case MessageType::RENAME_GROUP_REQ: {
+                auto* body = proto_msg.mutable_rename_group_rsp();
+                body->set_success(result.success);
+                if (result.success) {
+                    body->set_group_id(result.group_id);
                 } else {
                     body->set_error_message(result.error_message);
                 }

@@ -1201,6 +1201,27 @@ bool StorageManager::remove_admin(uint64_t group_id, uint64_t owner_id, uint64_t
     return ok;
 }
 
+bool StorageManager::rename_group(uint64_t group_id, uint64_t requester_id, const std::string& new_name) {// 修改群名（仅群主/管理员）
+    if (new_name.empty() || new_name.size() > 100) return false;
+    MYSQL* conn = mysql_pool_->acquire();
+    if (!conn) return false;
+    std::string ck = "SELECT role FROM group_members WHERE group_id=" + std::to_string(group_id)
+                    + " AND user_id=" + std::to_string(requester_id);
+    bool can = false;
+    if (mysql_query(conn, ck.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn);
+        MYSQL_ROW row = mysql_fetch_row(res);
+        if (row) { std::string r(row[0]); can = (r == "owner" || r == "admin"); }
+        mysql_free_result(res);
+    }
+    if (!can) { mysql_pool_->release(conn); return false; }
+    std::string en = escape_string(conn, new_name);
+    std::string q = "UPDATE chat_groups SET group_name='" + en + "' WHERE id=" + std::to_string(group_id);
+    bool ok = (mysql_query(conn, q.c_str()) == 0);
+    mysql_pool_->release(conn);
+    return ok;
+}
+
 bool StorageManager::approve_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id) {// 审批通过入群申请
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return false;
@@ -1470,7 +1491,7 @@ bool StorageManager::save_offline_message(uint64_t user_id, uint64_t sender_id,
 }
 
 std::vector<QueryResult::MessageHistory> StorageManager::get_history(
-    uint64_t user_id, uint64_t peer_id, int limit) {// 获取私聊历史记录
+    uint64_t user_id, uint64_t peer_id, int limit, uint64_t before_id) {// 获取私聊历史记录
     std::vector<QueryResult::MessageHistory> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
@@ -1479,7 +1500,9 @@ std::vector<QueryResult::MessageHistory> StorageManager::get_history(
                     "FROM messages m JOIN users u ON m.sender_id = u.id "
                     "WHERE ((m.sender_id=" + uid + " AND m.target_id=" + pid + ") "
                     "OR (m.sender_id=" + pid + " AND m.target_id=" + uid + ")) "
-                    "AND m.group_id IS NULL ORDER BY m.created_at DESC LIMIT " + std::to_string(limit);
+                    "AND m.group_id IS NULL ";
+    if (before_id > 0) q += "AND m.id < " + std::to_string(before_id) + " ";
+    q += "ORDER BY m.id DESC LIMIT " + std::to_string(limit);
     if (mysql_query(conn, q.c_str()) != 0) { mysql_pool_->release(conn); return result; }
     MYSQL_RES* res = mysql_store_result(conn);
     if (!res) { mysql_pool_->release(conn); return result; }
@@ -1498,14 +1521,16 @@ std::vector<QueryResult::MessageHistory> StorageManager::get_history(
     return result;
 }
 
-std::vector<QueryResult::MessageHistory> StorageManager::get_group_history(uint64_t group_id, int limit) {// 获取群聊历史记录
+std::vector<QueryResult::MessageHistory> StorageManager::get_group_history(
+    uint64_t group_id, int limit, uint64_t before_id) {// 获取群聊历史记录
     std::vector<QueryResult::MessageHistory> result;
     MYSQL* conn = mysql_pool_->acquire();
     if (!conn) return result;
     std::string q = "SELECT m.id, m.sender_id, u.username, m.body, UNIX_TIMESTAMP(m.created_at), m.is_read "
                     "FROM messages m JOIN users u ON m.sender_id = u.id "
-                    "WHERE m.group_id=" + std::to_string(group_id)
-                    + " ORDER BY m.created_at DESC LIMIT " + std::to_string(limit);
+                    "WHERE m.group_id=" + std::to_string(group_id);
+    if (before_id > 0) q += " AND m.id < " + std::to_string(before_id);
+    q += " ORDER BY m.id DESC LIMIT " + std::to_string(limit);
     if (mysql_query(conn, q.c_str()) != 0) { mysql_pool_->release(conn); return result; }
     MYSQL_RES* res = mysql_store_result(conn);
     if (!res) { mysql_pool_->release(conn); return result; }

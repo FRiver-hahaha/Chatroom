@@ -129,8 +129,11 @@ void FunctionBar::setGroupMode(bool isGroup, const QString &role) {
 
     bool showMember = isGroup;
     act_view_members_->setVisible(showMember);
-    act_change_name_->setVisible(showMember);
     act_quit_->setVisible(showMember);
+
+    // 修改群名仅群主/管理员可见
+    bool showChangeName = isGroup && (role == "admin" || role == "owner");
+    act_change_name_->setVisible(showChangeName);
 
     bool showAdmin = isGroup && (role == "admin" || role == "owner");
     act_approve_join_->setVisible(showAdmin);

@@ -123,6 +123,7 @@ private:
             case MessageType::APPROVE_JOIN_GROUP_REQ:    handle_approve_join_group(conn, msg, result); break;
             case MessageType::REJECT_JOIN_GROUP_REQ:    handle_reject_join_group(conn, msg, result); break;
             case MessageType::REMOVE_GROUP_MEMBER_REQ:   handle_remove_group_member(conn, msg, result); break;
+            case MessageType::RENAME_GROUP_REQ:          handle_group_change(conn, msg, result); break;
             default: break;
         }
     }

@@ -50,7 +50,12 @@ QSize ChatMessageDelegate::sizeHint(const QStyleOptionViewItem &option,
 
     int avail = (option.rect.width() > 0 ? option.rect.width() : 500)
                 - 2 * kSideMargin;
-    int bubbleW = qMin(avail - 16, kBubbleMaxWidth);  // 为另一侧留出空间
+    // 时间文本宽度（含年月日），窄气泡也需容纳，避免日期溢出气泡
+    QFont timeFont;
+    timeFont.setPointSizeF(8);
+    QString timeStr = QDateTime::fromSecsSinceEpoch(msg.timestamp).toString("yyyy-MM-dd HH:mm");
+    int timeW = QFontMetrics(timeFont).horizontalAdvance(timeStr);
+    int bubbleW = qMax(qMin(avail - 16, kBubbleMaxWidth), timeW + kHPadding);  // 为另一侧留出空间
     int textW = bubbleW - kHPadding;
 
     int h = kVPadding * 2 + kTimeHeight + contentHeight(msg.content, textW);
@@ -77,7 +82,12 @@ void ChatMessageDelegate::paint(QPainter *painter, const QStyleOptionViewItem &o
         pmPainter.setRenderHint(QPainter::Antialiasing);
 
         int avail = option.rect.width() - 2 * kSideMargin;
-        int bubbleW = qMin(avail - 16, kBubbleMaxWidth);
+        // 时间文本宽度（含年月日），窄气泡也需容纳，避免日期溢出气泡
+        QFont timeFont;
+        timeFont.setPointSizeF(8);
+        QString timeStr = QDateTime::fromSecsSinceEpoch(msg.timestamp).toString("yyyy-MM-dd HH:mm");
+        int timeW = QFontMetrics(timeFont).horizontalAdvance(timeStr);
+        int bubbleW = qMax(qMin(avail - 16, kBubbleMaxWidth), timeW + kHPadding);
         int textW = bubbleW - kHPadding;
 
         // 气泡外框（右侧消息贴右、左侧消息贴左）
@@ -116,12 +126,9 @@ void ChatMessageDelegate::paint(QPainter *painter, const QStyleOptionViewItem &o
         doc.drawContents(&pmPainter);
         pmPainter.resetTransform();
 
-        // 时间（右下角）
+        // 时间（右下角，含年月日）
         pmPainter.setPen(QColor("#aaaaaa"));
-        QFont timeFont;
-        timeFont.setPointSizeF(8);
         pmPainter.setFont(timeFont);
-        QString timeStr = QDateTime::fromSecsSinceEpoch(msg.timestamp).toString("HH:mm");
         pmPainter.drawText(QPoint(bubbleRect.right() - kHPadding / 2
                                       - pmPainter.fontMetrics().horizontalAdvance(timeStr),
                                   bubbleRect.bottom() - 4),

@@ -46,8 +46,8 @@ void ChatBubble::setupUi(const MessageItem &msg) {
         bubbleLayout->addWidget(contentLabel);
     }
 
-    // timestamp
-    auto *timeLabel = new QLabel(QDateTime::fromSecsSinceEpoch(msg.timestamp).toString("HH:mm"));
+    // timestamp（含年月日）
+    auto *timeLabel = new QLabel(QDateTime::fromSecsSinceEpoch(msg.timestamp).toString("yyyy-MM-dd HH:mm"));
     timeLabel->setStyleSheet("font-size: 10px; color: #aaa;");
     timeLabel->setAlignment(Qt::AlignRight);
     bubbleLayout->addWidget(timeLabel);

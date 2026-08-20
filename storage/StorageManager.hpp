@@ -117,6 +117,7 @@ public:
     bool quit_group(uint64_t group_id, uint64_t user_id);
     bool add_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id);
     bool remove_admin(uint64_t group_id, uint64_t owner_id, uint64_t user_id);
+    bool rename_group(uint64_t group_id, uint64_t requester_id, const std::string& new_name);
     bool approve_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id);
     bool reject_join(uint64_t group_id, uint64_t admin_id, uint64_t user_id);
     bool remove_member(uint64_t group_id, uint64_t admin_id, uint64_t user_id);
@@ -141,9 +142,11 @@ public:
                               const std::string& content);
     std::vector<QueryResult::MessageHistory> get_history(uint64_t user_id,
                                                           uint64_t peer_id,
-                                                          int limit = 50);
+                                                          int limit = 50,
+                                                          uint64_t before_id = 0);
     std::vector<QueryResult::MessageHistory> get_group_history(uint64_t group_id,
-                                                                int limit = 50);
+                                                                int limit = 50,
+                                                                uint64_t before_id = 0);
     std::vector<QueryResult::MessageHistory> get_offline_messages(uint64_t user_id);
     bool mark_read(uint64_t message_id);
 

@@ -54,10 +54,13 @@ private slots:
     void onRemoveMember();
     void onAddAdmin();
     void onRemoveAdmin();
+    void onRenameGroup();
+    void onLoggedOut();
 
     void onContactsUpdated();
     void onMessagesUpdated();
     void onHistoryPrepended(int count);
+    void onHistoryExhausted();
     void onChatChanged();
     void onSystemNotification(const QString &text);
     void onIncomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
@@ -94,9 +97,8 @@ private:
     InfoPanel *info_panel_;
     FunctionBar *function_bar_;
 
-    // 历史记录加载（微信式上滑加载）
+    // 历史记录加载（微信式上滑加载，每次一个批次，由 ClientState 游标驱动）
     bool history_loading_ = false;
-    int history_limit_ = 50;
     QPersistentModelIndex top_visible_index_;
     bool at_bottom_ = true;
 

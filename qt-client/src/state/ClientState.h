@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QVector>
 #include <QMap>
+#include <QSet>
 #include <QString>
 #include <functional>
 #include "chatroom.pb.h"
@@ -90,11 +91,19 @@ public:
     void approveJoinGroup(uint64_t groupId, uint64_t targetUserId);
     void removeGroupMember(uint64_t groupId, uint64_t targetUserId);
     void rejectJoinGroup(uint64_t groupId, uint64_t targetUserId);
+    void renameGroup(uint64_t groupId, const QString &newName);
 
     // chat
     void sendPrivateChat(uint64_t targetId, const QString &text);
     void sendGroupChat(uint64_t groupId, const QString &text);
-    void getHistory(uint64_t targetId, uint64_t groupId, int limit = 50);
+    void getHistory(uint64_t targetId, uint64_t groupId, int limit = 50,
+                    uint64_t beforeId = 0);
+    // 微信式上滑：按批次拉取当前会话更早的历史记录
+    void requestOlderHistory();
+    bool hasMoreHistory() const { return !history_exhausted_; }
+
+    // 每次向上刷新加载的历史条数（微信约 20~50 条，这里取 50）
+    static constexpr int HistoryBatchSize = 50;
 
     // login timeout (5s)
     static constexpr int LoginTimeoutMs = 5000;
@@ -123,6 +132,8 @@ signals:
     void registerResult(bool success, const QString &errorMsg);
     void verifyCodeResult(bool success, const QString &errorMsg);
     void operationResult(bool success, const QString &errorMsg);
+    // 群组管理操作（设置/取消管理员、审批、移除成员、修改群名）专用结果信号，带群号
+    void groupOperationResult(bool success, const QString &errorMsg, uint64_t groupId);
     void logoutDone();
     void deleteAccountResult(bool success, const QString &errorMsg);
     void passwordResetResult(bool success, const QString &errorMsg);
@@ -132,6 +143,8 @@ signals:
     void messagesUpdated();
     // 历史消息已前置插入 count 条（上滑加载/进入聊天拉取历史）
     void messagesHistoryPrepended(int count);
+    // 更早的历史已全部加载完毕（无更多消息）
+    void historyExhausted();
     void incomingMessage(uint64_t fromId, const QString &senderName, const QString &content);
     void groupMessageReceived(uint64_t groupId, uint64_t senderId, const QString &senderName, const QString &content);
     void groupMembersReceived(uint64_t groupId, const QVector<GroupMemberItem> &members);
@@ -171,6 +184,7 @@ private:
                           uint64_t fileSize, uint32_t totalChunks, uint32_t nextSeq);
     void sortContacts();
     void onLoginTimeout();
+    void clearLocalData();
     void handleVerifyCodeResponse(const chatroom::ChatMessage &msg);
     void emitGroupMembersFromRsp(uint64_t groupId,
                                  const google::protobuf::RepeatedPtrField<chatroom::GroupMember> &members);
@@ -188,7 +202,16 @@ private:
     uint64_t current_target_id_ = 0;
     uint64_t current_group_id_ = 0;
 
+    // 历史记录分批加载游标（微信式）
+    uint64_t history_oldest_id_ = 0;    // 已加载消息中最早的 message_id（游标）
+    uint64_t history_pending_before_ = 0; // 当前在途请求的游标（0 = 最新一批）
+    bool history_fetching_ = false;     // 是否有历史请求在途（防并发）
+    bool history_exhausted_ = false;    // 更早的历史是否已全部加载完
+
     QMap<uint32_t, std::function<void(const chatroom::ChatMessage &)>> pending_callbacks_;
+
+    // 已处理（接受/拒绝）的文件传输，避免重复弹窗提醒
+    QSet<uint64_t> processed_transfers_;
 
     QTimer *refresh_timer_ = nullptr;
     QTimer *login_timeout_timer_ = nullptr;

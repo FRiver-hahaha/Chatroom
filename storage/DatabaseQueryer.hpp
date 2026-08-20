@@ -403,6 +403,7 @@ private:
             case MessageType::APPROVE_JOIN_GROUP_REQ:    return handle_approve_join_group_query(msg);
             case MessageType::REJECT_JOIN_GROUP_REQ:    return handle_reject_join_group_query(msg);
             case MessageType::REMOVE_GROUP_MEMBER_REQ:   return handle_remove_group_member_query(msg);
+            case MessageType::RENAME_GROUP_REQ:          return handle_rename_group_query(msg);
             default: return fail("未知群组操作");
         }
     }
@@ -434,6 +435,7 @@ private:
     QueryResult handle_join_group_query(const Message& msg) {// 处理加入群组
         QueryResult r;
         uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(msg.payload);
+        if (storage_->get_group_info(gid).group_id == 0) return fail("群组不存在");
         if (storage_->is_group_member(gid, msg.sender_id)) return fail("已经是群组成员");
 
         if (storage_->is_group_public(gid)) {
@@ -511,6 +513,19 @@ private:
     QueryResult handle_remove_group_member_query(const Message& msg) {
         return do_group_admin_op(msg, &StorageManager::remove_member, "移除群组成员失败");
     }
+    QueryResult handle_rename_group_query(const Message& msg) {// 修改群名（仅群主/管理员）
+        QueryResult r;
+        auto [gid_str, name] = split_two(msg.payload);
+        uint64_t gid = msg.group_id; if (gid == 0) gid = std::stoull(gid_str);
+        r.group_id = gid;
+        r.success = storage_->rename_group(gid, msg.sender_id, name);
+        if (r.success) {
+            r.group_members = storage_->get_group_members(gid);
+        } else {
+            r.error_message = "修改群名失败（仅群主或管理员可操作）";
+        }
+        return r;
+    }
 
     QueryResult query_chat(SessionState conn_state, const Message& msg) {// 聊天查询
         QueryResult r;
@@ -553,17 +568,19 @@ private:
 
     QueryResult handle_get_history_query(const Message& msg) {// 处理历史记录查询
         auto [target_str, rest] = split_two(msg.payload);
-        auto [group_str, limit_str] = split_two(rest);
+        auto [group_str, rest2] = split_two(rest);
+        auto [limit_str, before_str] = split_two(rest2);
         uint64_t tid = target_str.empty() ? 0 : std::stoull(target_str);
         uint64_t gid = group_str.empty() ? 0 : std::stoull(group_str);
         int limit = limit_str.empty() ? 50 : std::stoi(limit_str);
+        uint64_t before_id = before_str.empty() ? 0 : std::stoull(before_str);
 
         if (gid == 0 && tid == 0) return fail("缺少查询参数");
         if (gid != 0 && !storage_->is_group_member(gid, msg.sender_id))
             return fail("你不是该群组成员，无法查看聊天记录");
         QueryResult r; r.success = true;
-        r.history = (gid != 0) ? storage_->get_group_history(gid, limit)
-                              : storage_->get_history(msg.sender_id, tid, limit);
+        r.history = (gid != 0) ? storage_->get_group_history(gid, limit, before_id)
+                              : storage_->get_history(msg.sender_id, tid, limit, before_id);
         return r;
     }
 

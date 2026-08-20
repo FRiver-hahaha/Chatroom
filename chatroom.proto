@@ -63,6 +63,8 @@ message ChatMessage {
         GroupAdminRequest     reject_join_group_req  = 56;
         GroupOpResponse       reject_join_group_rsp  = 57;
         GroupMembersChangedNotify group_members_changed = 64;
+        RenameGroupRequest      rename_group_req     = 65;
+        GroupOpResponse         rename_group_rsp     = 66;
 
         // 心跳
         HeartbeatRequest      heartbeat_req          = 62;
@@ -267,6 +269,11 @@ message GroupMembersChangedNotify {
     uint64 group_id = 1;
 }
 
+message RenameGroupRequest {
+    uint64 group_id = 1;
+    string new_group_name = 2;
+}
+
 message HeartbeatRequest {
 }
 
@@ -291,6 +298,7 @@ message HistoryRequest {
     uint64 target_user_id = 1;  
     uint64 group_id       = 2; 
     int32  limit          = 3;  // 默认 50
+    uint64 before_id      = 4;  // 分页游标: 只返回 id < before_id 的消息, 0 表示取最新一批
 }
 
 message HistoryResponse {

@@ -147,13 +147,7 @@ void ClientState::onLoginTimeout() {
 void ClientState::logout() {
     storePendingCallback(static_cast<uint32_t>(MessageType::LOGOUT_RSP),
         [this](const chatroom::ChatMessage &) {
-            user_id_ = 0;
-            username_.clear();
-            nickname_.clear();
-            token_.clear();
-            contacts_.clear();
-            current_messages_.clear();
-            refresh_timer_->stop();
+            clearLocalData();
             emit logoutDone();
         });
     buildAndSend(static_cast<uint32_t>(MessageType::LOGOUT_REQ), nullptr);
@@ -164,17 +158,33 @@ void ClientState::deleteAccount(const QString &password) {
         [this](const chatroom::ChatMessage &msg) {
             bool ok = msg.delete_account_rsp().success();
             QString err = QString::fromStdString(msg.delete_account_rsp().error_message());
-            if (ok) {
-                user_id_ = 0; username_.clear(); nickname_.clear(); token_.clear();
-                contacts_.clear(); current_messages_.clear();
-                refresh_timer_->stop();
-            }
+            if (ok) clearLocalData();
             emit deleteAccountResult(ok, err);
         });
     buildAndSend(static_cast<uint32_t>(MessageType::DELETE_ACCOUNT_REQ), [&](chatroom::ChatMessage &m) {
         auto *body = m.mutable_delete_account_req();
         body->set_password(password.toStdString());
     });
+}
+
+void ClientState::clearLocalData() {
+    user_id_ = 0;
+    username_.clear();
+    nickname_.clear();
+    token_.clear();
+    contacts_.clear();
+    current_messages_.clear();
+    current_chat_type_ = ChatType::Private;
+    current_target_id_ = 0;
+    current_group_id_ = 0;
+    history_oldest_id_ = 0;
+    history_pending_before_ = 0;
+    history_fetching_ = false;
+    history_exhausted_ = false;
+    processed_transfers_.clear();
+    pending_callbacks_.clear();
+    refresh_timer_->stop();
+    MessageStore::instance()->clearAll();
 }
 
 void ClientState::updateNickname(const QString &nickname) {
@@ -380,8 +390,9 @@ void ClientState::addGroupAdmin(uint64_t groupId, uint64_t targetUserId) {
         [this](const chatroom::ChatMessage &msg) {
             const auto &rsp = msg.add_group_admin_rsp();
             if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
-            emit operationResult(rsp.success(),
-                                 QString::fromStdString(rsp.error_message()));
+            emit groupOperationResult(rsp.success(),
+                                     QString::fromStdString(rsp.error_message()),
+                                     rsp.group_id());
         });
     buildAndSend(static_cast<uint32_t>(MessageType::ADD_GROUP_ADMIN_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_add_group_admin_req()->set_group_id(groupId);
@@ -394,8 +405,9 @@ void ClientState::removeGroupAdmin(uint64_t groupId, uint64_t targetUserId) {
         [this](const chatroom::ChatMessage &msg) {
             const auto &rsp = msg.remove_group_admin_rsp();
             if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
-            emit operationResult(rsp.success(),
-                                 QString::fromStdString(rsp.error_message()));
+            emit groupOperationResult(rsp.success(),
+                                     QString::fromStdString(rsp.error_message()),
+                                     rsp.group_id());
         });
     buildAndSend(static_cast<uint32_t>(MessageType::REMOVE_GROUP_ADMIN_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_remove_group_admin_req()->set_group_id(groupId);
@@ -408,8 +420,9 @@ void ClientState::approveJoinGroup(uint64_t groupId, uint64_t targetUserId) {
         [this](const chatroom::ChatMessage &msg) {
             const auto &rsp = msg.approve_join_group_rsp();
             if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
-            emit operationResult(rsp.success(),
-                                 QString::fromStdString(rsp.error_message()));
+            emit groupOperationResult(rsp.success(),
+                                     QString::fromStdString(rsp.error_message()),
+                                     rsp.group_id());
         });
     buildAndSend(static_cast<uint32_t>(MessageType::APPROVE_JOIN_GROUP_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_approve_join_group_req()->set_group_id(groupId);
@@ -422,8 +435,9 @@ void ClientState::removeGroupMember(uint64_t groupId, uint64_t targetUserId) {
         [this](const chatroom::ChatMessage &msg) {
             const auto &rsp = msg.remove_group_member_rsp();
             if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
-            emit operationResult(rsp.success(),
-                                 QString::fromStdString(rsp.error_message()));
+            emit groupOperationResult(rsp.success(),
+                                     QString::fromStdString(rsp.error_message()),
+                                     rsp.group_id());
         });
     buildAndSend(static_cast<uint32_t>(MessageType::REMOVE_GROUP_MEMBER_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_remove_group_member_req()->set_group_id(groupId);
@@ -436,12 +450,27 @@ void ClientState::rejectJoinGroup(uint64_t groupId, uint64_t targetUserId) {
         [this](const chatroom::ChatMessage &msg) {
             const auto &rsp = msg.reject_join_group_rsp();
             if (rsp.success()) emitGroupMembersFromRsp(rsp.group_id(), rsp.members());
-            emit operationResult(rsp.success(),
-                                 QString::fromStdString(rsp.error_message()));
+            emit groupOperationResult(rsp.success(),
+                                     QString::fromStdString(rsp.error_message()),
+                                     rsp.group_id());
         });
     buildAndSend(static_cast<uint32_t>(MessageType::REJECT_JOIN_GROUP_REQ), [&](chatroom::ChatMessage &m) {
         m.mutable_reject_join_group_req()->set_group_id(groupId);
         m.mutable_reject_join_group_req()->set_target_user_id(targetUserId);
+    });
+}
+
+void ClientState::renameGroup(uint64_t groupId, const QString &newName) {
+    storePendingCallback(static_cast<uint32_t>(MessageType::RENAME_GROUP_RSP),
+        [this](const chatroom::ChatMessage &msg) {
+            const auto &rsp = msg.rename_group_rsp();
+            emit groupOperationResult(rsp.success(),
+                                     QString::fromStdString(rsp.error_message()),
+                                     rsp.group_id());
+        });
+    buildAndSend(static_cast<uint32_t>(MessageType::RENAME_GROUP_REQ), [&](chatroom::ChatMessage &m) {
+        m.mutable_rename_group_req()->set_group_id(groupId);
+        m.mutable_rename_group_req()->set_new_group_name(newName.toStdString());
     });
 }
 
@@ -485,15 +514,30 @@ void ClientState::sendGroupChat(uint64_t groupId, const QString &text) {
     MessageStore::instance()->storeMessage(item, true, 0, groupId);
 }
 
-void ClientState::getHistory(uint64_t targetId, uint64_t groupId, int limit) {
+void ClientState::getHistory(uint64_t targetId, uint64_t groupId, int limit,
+                             uint64_t beforeId) {
+    history_pending_before_ = beforeId;
+    history_fetching_ = true;
     storePendingCallback(static_cast<uint32_t>(MessageType::GET_HISTORY_RSP),
         [this](const chatroom::ChatMessage &msg) { handleHistoryResponse(msg); });
     buildAndSend(static_cast<uint32_t>(MessageType::GET_HISTORY_REQ), [&](chatroom::ChatMessage &m) {
+        // 信封上的 target_id/group_id 会被服务端原样回显，客户端据此判断响应归属
+        m.set_target_id(targetId);
+        m.set_group_id(groupId);
         auto *body = m.mutable_get_history_req();
         body->set_target_user_id(targetId);
         body->set_group_id(groupId);
         body->set_limit(limit);
+        body->set_before_id(beforeId);
     });
+}
+
+void ClientState::requestOlderHistory() {
+    if (history_fetching_ || history_exhausted_) return;
+    if (current_messages_.isEmpty()) return;
+    if (history_oldest_id_ == 0) return;  // 最早的记录还没有服务端 id，无法作为游标
+    getHistory(current_target_id_, current_group_id_, HistoryBatchSize,
+               history_oldest_id_);
 }
 
 // ===== file =====
@@ -593,6 +637,14 @@ void ClientState::uploadNextChunk(uint64_t transferId, const QString &fileName, 
 }
 
 void ClientState::acceptFileTransfer(uint64_t transferId, bool accept) {
+    processed_transfers_.insert(transferId);
+    storePendingCallback(static_cast<uint32_t>(MessageType::FILE_TRANSFER_ACCEPT_RSP),
+        [this, accept](const chatroom::ChatMessage &msg) {
+            const auto &rsp = msg.file_transfer_accept_rsp();
+            emit operationResult(rsp.success(),
+                rsp.success() ? QString(accept ? "已接受文件传输" : "已拒绝文件传输")
+                              : QString::fromStdString(rsp.error_message()));
+        });
     buildAndSend(static_cast<uint32_t>(MessageType::FILE_TRANSFER_ACCEPT_REQ), [&](chatroom::ChatMessage &m) {
         auto *body = m.mutable_file_transfer_accept_req();
         body->set_transfer_id(transferId);
@@ -686,15 +738,25 @@ void ClientState::setCurrentChat(ChatType type, uint64_t targetId, uint64_t grou
     current_group_id_ = groupId;
     current_messages_.clear();
 
-    // 先加载本地 SQLite 记录，再向服务端拉取增量
+    // 微信式分批加载：先展示本地最近一批，再向服务端拉取最新一批合并
+    history_oldest_id_ = 0;
+    history_pending_before_ = 0;
+    history_fetching_ = false;
+    history_exhausted_ = false;
     current_messages_ = MessageStore::instance()->loadHistory(
-        type == ChatType::Group, targetId, groupId);
+        type == ChatType::Group, targetId, groupId, HistoryBatchSize);
+    for (const auto &m : current_messages_) {
+        if (m.message_id != 0) {
+            history_oldest_id_ = m.message_id;
+            break;
+        }
+    }
     emit currentChatChanged();
 
     if (type == ChatType::Private) {
-        getHistory(targetId, 0);
+        getHistory(targetId, 0, HistoryBatchSize, 0);
     } else {
-        getHistory(0, groupId);
+        getHistory(0, groupId, HistoryBatchSize, 0);
     }
 }
 
@@ -776,9 +838,7 @@ void ClientState::onConnected() {
 }
 
 void ClientState::onDisconnected() {
-    user_id_ = 0; username_.clear(); nickname_.clear(); token_.clear();
-    contacts_.clear(); current_messages_.clear();
-    refresh_timer_->stop();
+    clearLocalData();
     heartbeat_timer_->stop();
     emit logoutDone();
 }
@@ -895,17 +955,24 @@ void ClientState::handleGroupMembersResponse(const chatroom::ChatMessage &msg) {
 
 void ClientState::handleHistoryResponse(const chatroom::ChatMessage &msg) {
     const auto &rsp = msg.get_history_rsp();
-    if (!rsp.success()) return;
+    if (!rsp.success()) {
+        history_fetching_ = false;
+        emit messagesUpdated();
+        return;
+    }
 
     // 防止切换聊天后，旧请求的响应污染当前聊天
     if (current_chat_type_ == ChatType::Private && msg.target_id() != current_target_id_) return;
     if (current_chat_type_ == ChatType::Group && msg.group_id() != current_group_id_) return;
 
     bool isGroup = (current_chat_type_ == ChatType::Group);
+    uint64_t pendingBefore = history_pending_before_;
+    history_pending_before_ = 0;
+    history_fetching_ = false;
 
-    // 服务端历史为最新的在前，逆序构建为旧 -> 新
+    // 服务端已按旧 -> 新返回（存储层 ORDER BY id DESC 后 reverse），保持原序构建
     QVector<MessageItem> serverItems;
-    for (int i = rsp.messages_size() - 1; i >= 0; --i) {
+    for (int i = 0; i < rsp.messages_size(); ++i) {
         const auto &m = rsp.messages(i);
         MessageItem item;
         item.message_id = m.message_id();
@@ -919,7 +986,7 @@ void ClientState::handleHistoryResponse(const chatroom::ChatMessage &msg) {
         serverItems.append(item);
     }
 
-    // 本地乐观消息（message_id=0）被服务端确认后，用真实版本替换
+    // 本地乐观消息（message_id=0）被服务端确认后，用真实版本替换（内存 + 本地库）
     for (const auto &si : serverItems) {
         for (auto &lm : current_messages_) {
             if (lm.message_id == 0 && lm.sender_id == si.sender_id &&
@@ -927,6 +994,8 @@ void ClientState::handleHistoryResponse(const chatroom::ChatMessage &msg) {
                 std::abs(static_cast<int64_t>(lm.timestamp) - static_cast<int64_t>(si.timestamp)) <= 300) {
                 lm.message_id = si.message_id;
                 lm.status = MessageItem::Sent;
+                MessageStore::instance()->confirmMessage(si, isGroup,
+                                                         current_target_id_, current_group_id_);
                 break;
             }
         }
@@ -937,33 +1006,55 @@ void ClientState::handleHistoryResponse(const chatroom::ChatMessage &msg) {
     for (const auto &m : current_messages_) {
         if (m.message_id != 0) existing.insert(m.message_id);
     }
-    QVector<MessageItem> history;
+    QVector<MessageItem> newItems;
     for (const auto &si : serverItems) {
         if (existing.contains(si.message_id)) continue;
-        history.append(si);
+        newItems.append(si);
         existing.insert(si.message_id);
         MessageStore::instance()->storeMessage(si, isGroup,
                                                current_target_id_, current_group_id_);
     }
 
-    if (!history.isEmpty()) {
-        // 新历史全部早于现有第一条（常规场景：上滑加载/进入聊天拉旧记录）→ 前置插入
-        bool allBefore = true;
-        if (!current_messages_.isEmpty()) {
-            const auto &newest = history.last();  // history 已按时间升序
-            if (newest.timestamp > current_messages_.first().timestamp) allBefore = false;
+    if (!newItems.isEmpty()) {
+        uint64_t oldestLoaded = 0;   // 已加载消息中最早的 message_id
+        uint64_t newestLoaded = 0;   // 已加载消息中最新的 message_id
+        for (const auto &m : current_messages_) {
+            if (m.message_id != 0) { oldestLoaded = m.message_id; break; }
         }
-        if (allBefore) {
-            current_messages_ = history + current_messages_;
-            emit messagesHistoryPrepended(history.size());
+        for (int i = current_messages_.size() - 1; i >= 0; --i) {
+            if (current_messages_[i].message_id != 0) { newestLoaded = current_messages_[i].message_id; break; }
+        }
+
+        // 按游标分类合并，保证上滑时“上面新增、下面保留”
+        if (newItems.last().message_id < oldestLoaded || oldestLoaded == 0) {
+            // 全部早于已加载内容 → 前置插入（上滑加载/首次进入拉旧记录）
+            current_messages_ = newItems + current_messages_;
+            emit messagesHistoryPrepended(newItems.size());
+        } else if (newItems.first().message_id > newestLoaded) {
+            // 全部晚于已加载内容 → 追加到末尾（其他设备发的新消息）
+            current_messages_ += newItems;
         } else {
-            // 混合场景（含其他设备发的新消息）：全量按时间合并排序
-            current_messages_ += history;
+            // 混合场景：全量按时间合并排序
+            current_messages_ += newItems;
             std::sort(current_messages_.begin(), current_messages_.end(),
                       [](const MessageItem &a, const MessageItem &b) {
                           if (a.timestamp != b.timestamp) return a.timestamp < b.timestamp;
                           return a.message_id < b.message_id;
                       });
+        }
+
+        // 更新游标：始终指向当前最早一条服务端消息
+        history_oldest_id_ = 0;
+        for (const auto &m : current_messages_) {
+            if (m.message_id != 0) { history_oldest_id_ = m.message_id; break; }
+        }
+    }
+
+    // 分页游标请求返回不足一批（或为空）→ 更早的历史已加载完毕
+    if (pendingBefore > 0 && serverItems.size() < HistoryBatchSize) {
+        if (!history_exhausted_) {
+            history_exhausted_ = true;
+            emit historyExhausted();
         }
     }
 
@@ -1016,6 +1107,7 @@ void ClientState::handleFileSendResponse(const chatroom::ChatMessage &msg) {
 
 void ClientState::handleFileTransferNotify(const chatroom::ChatMessage &msg) {
     const auto &notify = msg.file_transfer_notify();
+    if (processed_transfers_.contains(notify.transfer_id())) return;
     emit fileTransferNotify(notify.transfer_id(), notify.sender_id(),
                             QString::fromStdString(notify.sender_name()),
                             QString::fromStdString(notify.file_name()),

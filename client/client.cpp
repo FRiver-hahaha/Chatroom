@@ -1,11 +1,3 @@
-/**
- * Chatroom 命令行测试客户端
- *
- * 协议：4 字节大端长度前缀 + Protobuf ChatMessage
- * 服务端：localhost:8080
- *
- * 编译：需要链接 protobuf 和 pthread
- */
 
 #include "chatroom.pb.h"
 #include "service/MessageType.hpp"
@@ -34,6 +26,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <termios.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <openssl/sha.h>
@@ -42,6 +35,7 @@
 using chatroom::MessageType;
 
 std::string read_line(const std::string& prompt);
+bool check_message_length(const std::string& text);
 
 
 #define ANSI_RESET   "\033[0m"
@@ -61,7 +55,6 @@ std::string read_line(const std::string& prompt);
 #define ANSI_WHITE   "\033[37m"
 
 #define BOX_HORz    '-'    
-#define BOX_VERt    '|'    
 #define BOX_CROSS   '+'    
 #define BOX_TL      '+'    
 #define BOX_TR      '+'    
@@ -276,6 +269,10 @@ public:
 
         
             for (auto it = notifications_.begin(); it != notifications_.end(); ++it) {
+                if (chat_mode_.load()) {
+                    notifications_.clear();
+                    break;
+                }
                 std::cout << "\r[通知] " << *it << std::endl;
                 std::cout << "> " << std::flush;
             }
@@ -1119,6 +1116,9 @@ bool send_verify_code(const std::string& channel, const std::string& target, con
             auto& r = resp.file_transfer_accept_rsp();
             if (r.success()) {
                 std::cout << "[成功] " << (accept ? "已接受" : "已拒绝") << "文件传输" << std::endl;
+                // 已处理的传输从待处理列表移除，避免反复提示
+                auto it = std::find(pending_transfers_.begin(), pending_transfers_.end(), transfer_id);
+                if (it != pending_transfers_.end()) pending_transfers_.erase(it);
                 return true;
             }
             std::cerr << "[失败] " << r.error_message() << std::endl;
@@ -1256,7 +1256,120 @@ bool send_verify_code(const std::string& channel, const std::string& target, con
         local_store_.print_history(chat_type, peer_id, limit);
     }
 
+    void enter_chat(bool is_group, uint64_t id) {
+        std::string label = is_group ? "[群聊]" : "[私聊]";
+        if (is_group) get_history(0, id, 20);
+        else get_history(id, 0, 20);
+
+        chat_mode_ = true;
+        chat_prompt_ = "[" + std::string(is_group ? "群聊" : "私聊")
+                       + " " + std::to_string(id) + "] > ";
+        std::cout << "\n===== 进入" << label << " 聊天，输入 \\q 退出 =====" << std::endl;
+
+        bool raw = enable_chat_input();
+        while (running_.load() && is_logged_in()) {
+            std::cout << chat_prompt_ << std::flush;
+            std::string line;
+            bool got = false;
+            if (raw) {
+                got = read_chat_input(line);
+            } else {
+                std::getline(std::cin, line);
+                got = !std::cin.fail();
+            }
+            if (!got) {
+                std::cout << std::endl;
+                break;
+            }
+            if (line == "\\q" || line == "q") break;
+            if (line.empty()) continue;
+            if (!check_message_length(line)) continue;
+
+            bool ok = is_group ? send_group_chat(id, line) : send_private_chat(id, line);
+            if (ok) {
+                std::cout << format_chat_line(label, username_, line, time(nullptr)) << std::endl;
+            }
+        }
+        if (raw) disable_chat_input();
+        {
+            std::lock_guard<std::mutex> lock(input_mutex_);
+            pending_input_.clear();
+        }
+
+        chat_mode_ = false;
+        std::cout << "\n[聊天] 已退出" << label << " 聊天" << std::endl;
+        flush_notifications();
+    }
+
 private:
+
+    static std::string format_chat_line(const std::string& label, const std::string& sender,
+                                        const std::string& content, uint64_t ts) {
+        time_t t = static_cast<time_t>(ts);
+        char buf[32];
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tmv);
+        return "  [" + std::string(buf) + "] " + label + " " + sender + ": " + content;
+    }
+
+    bool enable_chat_input() {
+        if (tcgetattr(STDIN_FILENO, &saved_termios_) != 0) return false;
+        struct termios t = saved_termios_;
+        t.c_lflag &= ~(ICANON | ECHO);
+        t.c_cc[VMIN] = 1;
+        t.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) return false;
+        raw_mode_ = true;
+        return true;
+    }
+
+    void disable_chat_input() {
+        if (!raw_mode_) return;
+        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios_);
+        raw_mode_ = false;
+    }
+
+    void redraw_chat_line() {
+        std::cout << "\r\033[K" << chat_prompt_ << pending_input_ << std::flush;
+    }
+
+    bool read_chat_input(std::string& out) {
+        out.clear();
+        while (true) {
+            char c;
+            ssize_t n = read(STDIN_FILENO, &c, 1);
+            if (n <= 0) return false;
+            if (c == '\n' || c == '\r') {
+                {
+                    std::lock_guard<std::mutex> lock(input_mutex_);
+                    out = pending_input_;
+                    pending_input_.clear();
+                }
+                std::cout << "\r\033[K" << std::flush;
+                return true;
+            }
+            if (c == 0x7f || c == 0x08) {
+                std::lock_guard<std::mutex> lock(input_mutex_);
+                if (pending_input_.empty()) continue;
+                size_t bytes = 1;
+                while (bytes < pending_input_.size() && bytes < 4) {
+                    unsigned char b = static_cast<unsigned char>(pending_input_[pending_input_.size() - bytes]);
+                    if ((b & 0xC0) != 0x80) break;
+                    ++bytes;
+                }
+                pending_input_.erase(pending_input_.size() - bytes);
+                redraw_chat_line();
+                continue;
+            }
+            if (c == 0x04) return false;
+            if (c >= 0x20) {
+                std::lock_guard<std::mutex> lock(input_mutex_);
+                pending_input_.push_back(c);
+                redraw_chat_line();
+            }
+        }
+    }
 
     void recv_loop() {
         std::string recv_buf;
@@ -1319,9 +1432,14 @@ private:
                         + " (" + std::to_string(n.file_size()) + " bytes, "
                         + std::to_string(n.total_chunks()) + " 分片)"
                         + " [transfer_id=" + std::to_string(n.transfer_id()) + "]";
-                    notifications_.push_back(info);
-                
                     pending_transfers_.push_back(n.transfer_id());
+                    if (chat_mode_.load()) {
+                        std::lock_guard<std::mutex> lock(input_mutex_);
+                        std::cout << "\r\033[K  [通知] " << info << std::endl;
+                        redraw_chat_line();
+                        return;
+                    }
+                    notifications_.push_back(info);
                 }
                 return;
             }
@@ -1352,6 +1470,13 @@ private:
                     local_store_.save_message(1, msg.group_id(), msg.sender_id(),
                                               sender_name, content, msg.timestamp(), false);
                 }
+                if (chat_mode_.load()) {
+                    std::lock_guard<std::mutex> lock(input_mutex_);
+                    std::cout << "\r\033[K" << format_chat_line(kind, sender_name, content, msg.timestamp())
+                              << std::endl;
+                    redraw_chat_line();
+                    return;
+                }
                 notifications_.push_back(kind + " " + sender_name + ": " + content);
                 return;
             }
@@ -1362,6 +1487,12 @@ private:
         } else {
         
             std::lock_guard<std::mutex> lock(resp_mutex_);
+            if (chat_mode_.load()) {
+                std::lock_guard<std::mutex> ilock(input_mutex_);
+                std::cout << "\r\033[K  [系统] " << payload << std::endl;
+                redraw_chat_line();
+                return;
+            }
             notifications_.push_back(std::move(payload));
         }
     }
@@ -1423,7 +1554,9 @@ private:
         if (resp.has_private_chat_rsp()) {
             auto& r = resp.private_chat_rsp();
             if (r.success()) {
-                std::cout << "[成功] " << op_name << "成功!" << std::endl;
+                if (!chat_mode_.load()) {
+                    std::cout << "[成功] " << op_name << "成功!" << std::endl;
+                }
                 return true;
             }
             std::cerr << "[失败] " << r.error_message() << std::endl;
@@ -1431,7 +1564,9 @@ private:
         if (resp.has_group_chat_rsp()) {
             auto& r = resp.group_chat_rsp();
             if (r.success()) {
-                std::cout << "[成功] " << op_name << "成功!" << std::endl;
+                if (!chat_mode_.load()) {
+                    std::cout << "[成功] " << op_name << "成功!" << std::endl;
+                }
                 return true;
             }
             std::cerr << "[失败] " << r.error_message() << std::endl;
@@ -1447,6 +1582,13 @@ private:
     uint64_t user_id_ = 0;
     std::string username_;
     std::string token_;
+
+    std::atomic<bool> chat_mode_{false};
+    std::string chat_prompt_;
+    std::mutex input_mutex_;
+    std::string pending_input_;
+    bool raw_mode_ = false;
+    struct termios saved_termios_;
 
     std::mutex resp_mutex_;
     std::condition_variable resp_cv_;
@@ -1533,23 +1675,9 @@ void show_status_bar(ChatClient& client, int term_width) {
     int sidebar_end = SIDEBAR_WIDTH;
     (void)sidebar_end;
 
-
     std::cout << ANSI_BOLD_BLUE << BOX_TL;
-    std::cout << std::string(term_width - 2, BOX_HORz) << BOX_TR << ANSI_RESET << std::endl;
-
-
-    std::cout << ANSI_BOLD_BLUE << BOX_VERt << "  " << ANSI_RESET;
     std::cout << ANSI_BOLD_CYAN << "ChatRoom 客户端" << ANSI_RESET;
-
-    std::cout << std::string(44, ' ') << BOX_VERt << ANSI_RESET << std::endl;
-
-
-    std::cout << ANSI_BOLD_BLUE << BOX_VERt << "  " << ANSI_RESET;
-    std::cout << std::string(term_width - 2, ' ') << BOX_VERt << ANSI_RESET << std::endl;
-
-
     std::cout << ANSI_BOLD_BLUE << BOX_BL;
-    std::cout << std::string(term_width - 2, BOX_HORz) << BOX_BR << ANSI_RESET << std::endl;
 
 
     std::cout << std::endl;
@@ -1611,9 +1739,7 @@ void menu_friend(ChatClient& client) {
                 break;
             case 7: {
                 uint64_t uid = read_uint64("  请输入对方 user_id: ");
-                std::string text = read_line("  消息内容: ");
-                if (!check_message_length(text)) break;
-                client.send_private_chat(uid, text);
+                client.enter_chat(false, uid);
                 break;
             }
         }
@@ -1704,9 +1830,7 @@ void menu_group(ChatClient& client) {
             }
             case 12: {
                 uint64_t gid = read_uint64("  请输入 group_id: ");
-                std::string text = read_line("  消息内容: ");
-                if (!check_message_length(text)) break;
-                client.send_group_chat(gid, text);
+                client.enter_chat(true, gid);
                 break;
             }
         }
@@ -1717,8 +1841,8 @@ void menu_group(ChatClient& client) {
 void menu_chat(ChatClient& client) {
     while (client.is_connected() && client.is_logged_in()) {
         print_header("聊天");
-        std::cout << "  1. 私聊（发送消息）" << std::endl;
-        std::cout << "  2. 群聊（发送消息）" << std::endl;
+        std::cout << "  1. 进入私聊（聊天模式，输入 \\q 退出）" << std::endl;
+        std::cout << "  2. 进入群聊（聊天模式，输入 \\q 退出）" << std::endl;
         std::cout << "  3. 查看私聊历史" << std::endl;
         std::cout << "  4. 查看群聊历史" << std::endl;
         std::cout << "  5. 查看本地聊天记录" << std::endl;
@@ -1729,16 +1853,12 @@ void menu_chat(ChatClient& client) {
             case 0: return;
             case 1: {
                 uint64_t uid = read_uint64("  请输入对方 user_id: ");
-                std::string text = read_line("  消息内容: ");
-                if (!check_message_length(text)) break;
-                client.send_private_chat(uid, text);
+                client.enter_chat(false, uid);
                 break;
             }
             case 2: {
                 uint64_t gid = read_uint64("  请输入 group_id: ");
-                std::string text = read_line("  消息内容: ");
-                if (!check_message_length(text)) break;
-                client.send_group_chat(gid, text);
+                client.enter_chat(true, gid);
                 break;
             }
             case 3: {

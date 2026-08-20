@@ -21,6 +21,8 @@
 #include <QListWidget>
 #include <QMap>
 #include <QPushButton>
+#include <QPointer>
+#include <memory>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -127,6 +129,7 @@ void MainWindow::setupConnections() {
     connect(state, &ClientState::contactsUpdated, this, &MainWindow::onContactsUpdated);
     connect(state, &ClientState::messagesUpdated, this, &MainWindow::onMessagesUpdated);
     connect(state, &ClientState::messagesHistoryPrepended, this, &MainWindow::onHistoryPrepended);
+    connect(state, &ClientState::historyExhausted, this, &MainWindow::onHistoryExhausted);
     connect(state, &ClientState::currentChatChanged, this, &MainWindow::onChatChanged);
     connect(state, &ClientState::systemNotification, this, &MainWindow::onSystemNotification);
     connect(state, &ClientState::incomingMessage, this, &MainWindow::onIncomingMessage);
@@ -153,6 +156,12 @@ void MainWindow::setupConnections() {
     connect(function_bar_, &FunctionBar::removeMemberClicked, this, &MainWindow::onRemoveMember);
     connect(function_bar_, &FunctionBar::addAdminClicked, this, &MainWindow::onAddAdmin);
     connect(function_bar_, &FunctionBar::removeAdminClicked, this, &MainWindow::onRemoveAdmin);
+    connect(function_bar_, &FunctionBar::changeGroupNameClicked, this, &MainWindow::onRenameGroup);
+
+    // 退出登录/注销账号后重置界面
+    connect(state, &ClientState::logoutDone, this, &MainWindow::onLoggedOut);
+    connect(state, &ClientState::deleteAccountResult, this,
+        [this](bool ok, const QString &) { if (ok) onLoggedOut(); });
 }
 
 void MainWindow::onLoginSuccess() {
@@ -176,7 +185,6 @@ void MainWindow::onContactClicked(const QModelIndex &index) {
     if (index.row() < 0 || index.row() >= contacts.size()) return;
 
     const auto &c = contacts[index.row()];
-    history_limit_ = 50;
     history_loading_ = false;
     if (c.type == ContactItem::Friend) {
         ClientState::instance()->setCurrentChat(ChatType::Private, c.id);
@@ -198,6 +206,12 @@ void MainWindow::onContactsUpdated() {
         const auto &c = state->contactById(state->currentTargetId(), ContactItem::Friend);
         if (c.id != 0)
             chat_title_->setText(c.name + (c.is_online ? " [在线]" : " [离线]"));
+    } else if (state->currentChatType() == ChatType::Group) {
+        const auto &c = state->contactById(state->currentGroupId(), ContactItem::Group);
+        if (c.id != 0) {
+            chat_title_->setText(c.name + " (群组)");
+            function_bar_->setGroupMode(true, c.role);
+        }
     }
 }
 
@@ -228,25 +242,24 @@ void MainWindow::onMessagesUpdated() {
 
     int modelCount = message_model_->rowCount();
     int total = msgs.size();
+    int common = qMin(modelCount, total);
 
-    if (total > modelCount) {
-        // 模型前 modelCount 条与 state 一致 → 新消息追加在末尾
-        bool samePrefix = true;
-        for (int i = 0; i < modelCount; ++i) {
-            if (!sameMessage(msgs[i], message_model_->messageAt(i))) {
-                samePrefix = false;
-                break;
-            }
+    // 检查模型前缀是否与 state 一致（含重排检测）
+    bool samePrefix = true;
+    for (int i = 0; i < common; ++i) {
+        if (!sameMessage(msgs[i], message_model_->messageAt(i))) {
+            samePrefix = false;
+            break;
         }
-        if (samePrefix) {
-            for (int i = modelCount; i < total; ++i)
-                message_model_->appendMessage(msgs[i]);
-        } else {
-            // 顺序已变化（历史合并/重排），全量重置
-            message_model_->setMessages(msgs);
-        }
-    } else if (total < modelCount) {
+    }
+
+    if (modelCount > common || !samePrefix) {
+        // 顺序已变化（历史合并/重排/清空），全量重置
         message_model_->setMessages(msgs);
+    } else if (total > modelCount) {
+        // 前缀一致 → 新消息追加在末尾
+        for (int i = modelCount; i < total; ++i)
+            message_model_->appendMessage(msgs[i]);
     }
 
     history_loading_ = false;
@@ -258,8 +271,13 @@ void MainWindow::onHistoryPrepended(int count) {
     auto *state = ClientState::instance();
     const auto &msgs = state->currentChatMessages();
     saveScrollState();
+    // 上面的新内容插入后，锚定原本可见的第一条，保证下面的内容位置不变
     message_model_->prependMessages(msgs.mid(0, count));
     restoreScrollState();
+}
+
+void MainWindow::onHistoryExhausted() {
+    statusBar()->showMessage("没有更多历史消息了", 3000);
 }
 
 void MainWindow::onChatChanged() {
@@ -332,12 +350,12 @@ void MainWindow::onHistoryLoadRequested() {
     if (message_model_->rowCount() == 0) return;
 
     history_loading_ = true;
-    history_limit_ += 30;
-    if (state->currentChatType() == ChatType::Private) {
-        state->getHistory(state->currentTargetId(), 0, history_limit_);
-    } else {
-        state->getHistory(0, state->currentGroupId(), history_limit_);
+    if (!state->hasMoreHistory()) {
+        history_loading_ = false;
+        return;
     }
+    // 由 ClientState 内部游标决定拉取更早的一批（50 条）
+    state->requestOlderHistory();
 }
 
 void MainWindow::onFileTransferNotify(uint64_t transferId, uint64_t senderId,
@@ -588,10 +606,12 @@ void MainWindow::openGroupMemberDialog(
         return;
     }
 
-    state->queryGroupMembers(state->currentGroupId());
+    uint64_t groupId = state->currentGroupId();
+    state->queryGroupMembers(groupId);
     auto *conn = new QMetaObject::Connection();
     *conn = connect(state, &ClientState::groupMembersReceived, this,
-        [this, conn, title, filter, actions](uint64_t, const QVector<GroupMemberItem> &members) {
+        [this, conn, title, filter, actions, groupId](uint64_t gid, const QVector<GroupMemberItem> &members) {
+            if (gid != groupId) return;  // 忽略其他群的成员列表变更
             disconnect(*conn);
             delete conn;
 
@@ -607,6 +627,7 @@ void MainWindow::openGroupMemberDialog(
             auto *dlg = new QDialog(this);
             dlg->setWindowTitle(title);
             dlg->setMinimumWidth(340);
+            QPointer<QDialog> dlgGuard(dlg);
 
             auto *layout = new QVBoxLayout(dlg);
             auto *list = new QListWidget(dlg);
@@ -631,24 +652,28 @@ void MainWindow::openGroupMemberDialog(
                 auto *btn = new QPushButton(btnText, dlg);
                 btnRow->addWidget(btn);
                 connect(btn, &QPushButton::clicked, this,
-                    [this, dlg, list, idByText, action, successMsg]() {
+                    [this, dlgGuard, list, idByText, action, successMsg]() {
+                        if (dlgGuard.isNull()) return;
                         auto *item = list->currentItem();
                         if (!item) {
-                            QMessageBox::information(dlg, "提示", "请先选择一个成员");
+                            QMessageBox::information(dlgGuard, "提示", "请先选择一个成员");
                             return;
                         }
                         uint64_t uid = idByText.value(item->text());
                         auto *state = ClientState::instance();
-                        auto *opConn = new QMetaObject::Connection();
-                        *opConn = connect(state, &ClientState::operationResult, this,
-                            [this, dlg, opConn, state, successMsg](bool ok, const QString &err) {
+                        // 使用专用群操作信号，并以对话框为连接上下文：
+                        // 对话框关闭后连接自动断开，避免响应到达时访问已销毁对象
+                        auto opConn = std::make_shared<QMetaObject::Connection>();
+                        *opConn = connect(state, &ClientState::groupOperationResult, dlgGuard,
+                            [this, dlgGuard, opConn, state, successMsg](bool ok, const QString &err, uint64_t) {
                                 disconnect(*opConn);
-                                delete opConn;
+                                if (dlgGuard.isNull()) return;
                                 if (ok) {
-                                    // 响应已携带最新成员列表，ClientState 已发出 groupMembersReceived
-                                    QMessageBox::information(dlg, "提示", successMsg);
+                                    QMessageBox::information(dlgGuard, "提示", successMsg);
+                                    // 操作后刷新成员列表（成员/角色已变化）
+                                    state->queryGroupMembers(state->currentGroupId());
                                 } else {
-                                    QMessageBox::warning(dlg, "提示", "操作失败: " + err);
+                                    QMessageBox::warning(dlgGuard, "提示", "操作失败: " + err);
                                 }
                             });
                         action(uid);
@@ -714,6 +739,43 @@ void MainWindow::onRemoveAdmin() {
                  ClientState::instance()->currentGroupId(), uid); },
              QString::fromUtf8("已取消该成员的管理员身份")},
         });
+}
+
+void MainWindow::onRenameGroup() {
+    auto *state = ClientState::instance();
+    if (state->currentChatType() != ChatType::Group) {
+        QMessageBox::information(this, "提示", "请先选择一个群组聊天");
+        return;
+    }
+    bool ok = false;
+    QString newName = QInputDialog::getText(this, "修改群名", "新的群名称:",
+                                            QLineEdit::Normal, QString(), &ok);
+    if (!ok || newName.trimmed().isEmpty()) return;
+
+    uint64_t gid = state->currentGroupId();
+    auto *conn = new QMetaObject::Connection();
+    *conn = connect(state, &ClientState::groupOperationResult, this,
+        [this, conn, state, gid](bool success, const QString &err, uint64_t rspGid) {
+            if (rspGid != gid) return;
+            disconnect(*conn);
+            delete conn;
+            if (success) {
+                // 刷新群列表以同步群名
+                state->queryGroupList();
+                QMessageBox::information(this, "提示", "群名修改成功");
+            } else {
+                QMessageBox::warning(this, "提示", "修改群名失败: " + err);
+            }
+        });
+    state->renameGroup(gid, newName.trimmed());
+}
+
+void MainWindow::onLoggedOut() {
+    contact_model_->setContacts({});
+    message_model_->setMessages({});
+    chat_title_->setText("聊天");
+    info_panel_->clear();
+    function_bar_->setGroupMode(false, "");
 }
 
 void MainWindow::onGroupMembersReceived(uint64_t groupId, const QVector<GroupMemberItem> &members) {
